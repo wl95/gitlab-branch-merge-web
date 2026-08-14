@@ -78,14 +78,36 @@ body {
 /* ========== 布局 ========== */
 .app {
   min-height: 100vh;
-  padding: 66px 16px 16px;
-  padding-right: 396px; /* 为右侧执行面板留出空间，由 App.vue 动态覆盖 */
+  padding: 68px 20px 20px;
+  padding-right: 364px; /* 为右侧执行面板留出空间，由 App.vue 动态覆盖 */
   transition: padding-right 0.25s ease;
 }
 
 .app-main {
-  max-width: 1320px;
+  max-width: 1680px;
   margin: 0 auto;
+}
+
+.workspace {
+  display: grid;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.workspace-sidebar {
+  position: sticky;
+  top: 68px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 88px);
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.workspace-content {
+  min-width: 0;
 }
 
 /* ========== 顶部导航 ========== */
@@ -102,7 +124,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 0 16px;
+  padding: 0 20px;
 }
 
 .app-header .logo {
@@ -134,6 +156,8 @@ body {
   margin-left: auto;
   display: flex;
   gap: 8px;
+  align-items: center;
+  flex: none;
 }
 
 /* ========== 面板通用 ========== */
@@ -141,7 +165,7 @@ body {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 
 .panel-head {
@@ -269,10 +293,24 @@ body {
 .section-title {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  margin: 18px 2px 10px;
+  margin: 0 2px 12px;
   font-size: 15px;
   font-weight: 600;
+}
+
+.section-title > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.section-sub {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .section-title .count {
@@ -392,8 +430,8 @@ body {
 /* ========== 全局面板 ========== */
 .gp-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: 1fr;
+  gap: 10px;
   margin-bottom: 12px;
 }
 
@@ -410,21 +448,25 @@ body {
 
 .gp-foot {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 8px;
-  align-items: center;
+  align-items: stretch;
 }
 
 .gp-foot .el-input {
-  flex: 1;
-  min-width: 220px;
+  width: 100%;
+}
+
+.gp-foot .el-button {
+  margin-left: 0;
+  width: 100%;
 }
 
 /* ========== 工程卡片 ========== */
 .cards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 14px;
 }
 
 .empty-cards {
@@ -436,6 +478,10 @@ body {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.8;
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .card {
@@ -518,6 +564,10 @@ body {
   transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease, transform 0.06s ease;
 }
 
+.pick-btn-row .el-button.action-btn + .el-button.action-btn {
+  margin-left: 0;
+}
+
 .pick-btn-row .el-button.action-btn .el-icon {
   font-size: 14px;
 }
@@ -582,7 +632,7 @@ body {
   top: 52px;
   right: 0;
   bottom: 0;
-  width: 380px;
+  width: 340px;
   z-index: 800;
   background: var(--panel);
   border-left: 1px solid var(--border);
@@ -1095,7 +1145,34 @@ body {
 
 @media (max-width: 1200px) {
   .app {
-    padding-right: 16px;
+    padding-right: 20px !important;
+  }
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+  .workspace-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+  .workspace-sidebar .panel {
+    margin-bottom: 0;
+  }
+  .gp-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+  .gp-foot {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .gp-foot .el-input {
+    flex: 1;
+    min-width: 260px;
+  }
+  .gp-foot .el-button {
+    width: auto;
   }
   .exec-panel {
     position: static;
@@ -1108,6 +1185,72 @@ body {
   .exec-panel.collapsed {
     width: auto;
     max-height: 46px;
+  }
+}
+
+@media (max-width: 760px) {
+  .app {
+    padding: 118px 12px 12px;
+    padding-right: 12px !important;
+  }
+  .app-header {
+    height: auto;
+    min-height: 52px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+  }
+  .app-header .title-box {
+    min-width: 0;
+    flex: 1;
+  }
+  .app-header .title-box .sub {
+    display: none;
+  }
+  .app-header .header-actions {
+    width: 100%;
+    margin-left: 0;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .app-header .header-actions .el-button {
+    margin-left: 0;
+  }
+  .workspace {
+    gap: 12px;
+  }
+  .section-title {
+    align-items: flex-start;
+  }
+  .section-title > div {
+    flex-direction: column;
+    gap: 2px;
+  }
+  .gp-grid {
+    grid-template-columns: 1fr;
+  }
+  .gp-foot {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .gp-foot .el-button,
+  .gp-foot .el-input {
+    width: 100%;
+    min-width: 0;
+  }
+  .cards {
+    grid-template-columns: 1fr;
+  }
+  .card {
+    padding: 12px;
+  }
+  .scan-row {
+    flex-wrap: wrap;
+  }
+  .scan-row .el-input {
+    flex-basis: 100%;
+  }
+  .exec-panel {
+    max-height: 560px;
   }
 }
 

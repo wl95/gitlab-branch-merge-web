@@ -74,12 +74,12 @@
             class="scan-item"
             @click="toggle(repo)"
           >
-            <el-checkbox :model-value="added(repo)" @click.prevent @change="() => toggle(repo)" />
+            <el-checkbox :model-value="added(repo)" @click.stop @change="() => toggle(repo)" />
             <div style="flex: 1; min-width: 0">
               <div class="scan-host">{{ repo.name || repo.ssh_host }}</div>
               <div class="scan-path">{{ repo.path }}</div>
             </div>
-            <el-button size="small" :type="added(repo) ? 'warning' : 'primary'" plain @click.prevent="toggle(repo)">
+            <el-button size="small" :type="added(repo) ? 'warning' : 'primary'" plain @click.stop="toggle(repo)">
               {{ added(repo) ? '移除' : '加入' }}
             </el-button>
           </div>
