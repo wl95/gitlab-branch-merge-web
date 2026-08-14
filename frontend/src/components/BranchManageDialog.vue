@@ -50,17 +50,25 @@
           <div class="bm-form">
             <div class="bm-field">
               <label>新分支名（可多个）</label>
-              <el-select
-                v-model="createNames"
-                multiple
-                filterable
-                allow-create
-                default-first-option
-                :reserve-keyword="false"
-                placeholder="输入分支名后按回车或逗号添加，可添加多个"
-              >
-                <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
-              </el-select>
+              <div class="bm-field-row">
+                <el-button
+                  :icon="EditPen"
+                  title="批量编辑新分支名"
+                  @click="openCreateNamesEditor"
+                />
+                <el-select
+                  v-model="createNames"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  :reserve-keyword="false"
+                  placeholder="输入分支名后按回车或逗号添加，可添加多个"
+                  style="flex: 1"
+                >
+                  <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
+                </el-select>
+              </div>
               <div class="bm-field-hint">
                 可输入多个分支名，每个分支都将基于所选目标分支创建；留空目标分支则使用各工程源分支
               </div>
@@ -97,12 +105,26 @@
         <el-tab-pane label="删除分支" name="delete">
           <div class="bm-form">
             <div class="bm-field">
-              <label>要删除的分支名</label>
-              <el-input
-                v-model="deleteName"
-                placeholder="例如：feature/expired-branch"
-                @keyup.enter="run"
-              />
+              <label>要删除的分支名（可多个）</label>
+              <div class="bm-field-row">
+                <el-button
+                  :icon="EditPen"
+                  title="批量编辑要删除的分支名"
+                  @click="openNamesEditor('delete')"
+                />
+                <el-select
+                  v-model="deleteNames"
+                  multiple
+                  filterable
+                  allow-create
+                  default-first-option
+                  :reserve-keyword="false"
+                  placeholder="输入分支名后按回车或逗号添加，可添加多个"
+                  style="flex: 1"
+                >
+                  <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
+                </el-select>
+              </div>
             </div>
             <div class="bm-tip danger">
               将删除所选工程上的远程分支。受保护分支（master / main / develop / release 等）禁止删除。
@@ -118,7 +140,18 @@
             </div>
             <div class="bm-field">
               <label>新分支名</label>
-              <el-input v-model="newName" placeholder="例如：feature/new-name" @keyup.enter="run" />
+              <div class="bm-field-row">
+                <el-button
+                  :icon="EditPen"
+                  title="编辑新分支名"
+                  @click="openNamesEditor('rename')"
+                />
+                <el-input
+                  v-model="newName"
+                  placeholder="例如：feature/new-name"
+                  @keyup.enter="run"
+                />
+              </div>
             </div>
           </div>
         </el-tab-pane>
@@ -134,7 +167,30 @@
         >
           {{ runLabel }}
         </el-button>
+        <el-button
+          v-if="branchUndo && branchUndo.has_undo"
+          type="danger"
+          plain
+          :loading="undoingBranch"
+          :disabled="running"
+          @click="undoBranchOperation"
+        >
+          {{ undoButtonText }}
+        </el-button>
         <span class="bm-note">将依次对 {{ checkedCount }} 个工程执行，并逐工程报告结果</span>
+      </div>
+
+      <div v-if="branchUndo && branchUndo.has_undo" class="bm-undo-tip">
+        最近{{ undoActionText }}于 {{ branchUndo.created_at }}，共 {{ branchUndo.items.length }} 个分支可撤回
+      </div>
+
+      <div v-if="branchLogs.length" class="bm-live">
+        <div class="bm-live-head">实时执行命令</div>
+        <div class="bm-live-list">
+          <div v-for="l in branchLogs" :key="l.id" class="bm-live-line" :class="l.cls">
+            {{ l.text }}
+          </div>
+        </div>
       </div>
 
       <!-- 结果 -->
@@ -150,12 +206,39 @@
               <CircleCheckFilled v-if="r.ok" />
               <CircleCloseFilled v-else />
             </el-icon>
-            <span class="bm-res-name">{{ r.name }}</span>
-            <span class="bm-res-msg">{{ r.ok ? r.message : r.error }}</span>
+            <div class="bm-res-main">
+              <div class="bm-res-line">
+                <span class="bm-res-name">{{ r.name }}</span>
+                <span class="bm-res-msg">{{ r.ok ? r.message : r.error }}</span>
+              </div>
+              <div v-if="r.commands && r.commands.length" class="bm-res-commands">
+                <div v-for="cmd in r.commands" :key="cmd" class="bm-res-command">{{ cmd }}</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
+
+    <el-dialog
+      v-model="namesEditorVisible"
+      :title="namesEditorTitle"
+      width="560"
+      append-to-body
+      class="bm-names-dialog"
+    >
+      <el-input
+        v-model="namesDraft"
+        type="textarea"
+        :rows="10"
+        resize="vertical"
+        placeholder="每行一个分支名，也支持逗号或空格分隔"
+      />
+      <template #footer>
+        <el-button @click="namesEditorVisible = false">取消</el-button>
+        <el-button type="primary" @click="applyNamesDraft">确定</el-button>
+      </template>
+    </el-dialog>
   </el-dialog>
 </template>
 
@@ -165,6 +248,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Operation,
   Refresh,
+  EditPen,
   CircleCheckFilled,
   CircleCloseFilled,
 } from '@element-plus/icons-vue'
@@ -180,13 +264,21 @@ const projects = useProjectsStore()
 
 const tab = ref('create')
 const running = ref(false)
+const undoingBranch = ref(false)
 const results = ref([])
+const branchUndo = ref(null)
+const branchLogs = ref([])
+const branchLogSince = ref(0)
+let branchLogTimer = null
 
 const createNames = ref([])
+const namesEditorVisible = ref(false)
+const namesEditorMode = ref('create')
+const namesDraft = ref('')
 const createFrom = ref('')
 const allBranches = ref([])
 const loadingBranches = ref(false)
-const deleteName = ref('')
+const deleteNames = ref([])
 const oldName = ref('')
 const newName = ref('')
 
@@ -213,6 +305,87 @@ function checkAll() {
 }
 function uncheckAll() {
   checkedIds.value = new Set()
+}
+
+function appendBranchLogs(entries) {
+  entries.forEach(([id, text]) => {
+    if (!text.includes('执行命令:')) return
+    let cls = 'info'
+    if (text.includes('[ERROR]')) cls = 'error'
+    else if (text.includes('[WARNING]')) cls = 'warn'
+    branchLogs.value.push({ id, text, cls })
+  })
+}
+
+async function startBranchLogPolling() {
+  stopBranchLogPolling()
+  branchLogs.value = []
+  try {
+    const r = await api.logs(0)
+    branchLogSince.value = r.since || 0
+  } catch {
+    branchLogSince.value = 0
+  }
+  branchLogTimer = setInterval(fetchBranchLogs, 300)
+}
+
+async function fetchBranchLogs() {
+  try {
+    const r = await api.logs(branchLogSince.value)
+    if (r.logs && r.logs.length) appendBranchLogs(r.logs)
+    branchLogSince.value = r.since || branchLogSince.value
+  } catch {
+    /* 实时日志只是辅助展示，失败不打断主流程 */
+  }
+}
+
+async function stopBranchLogPolling(flush = true) {
+  clearInterval(branchLogTimer)
+  branchLogTimer = null
+  if (flush) await fetchBranchLogs()
+}
+
+async function fetchBranchUndo() {
+  try {
+    branchUndo.value = await api.branchUndo()
+  } catch {
+    branchUndo.value = { has_undo: false }
+  }
+}
+
+function normalizeBranchNames(text) {
+  const seen = new Set()
+  const names = []
+  String(text || '')
+    .split(/[\n\r,，\s]+/)
+    .map((n) => n.trim())
+    .filter(Boolean)
+    .forEach((n) => {
+      if (seen.has(n)) return
+      seen.add(n)
+      names.push(n)
+    })
+  return names
+}
+
+function openNamesEditor(mode) {
+  namesEditorMode.value = mode
+  if (mode === 'delete') namesDraft.value = deleteNames.value.join('\n')
+  else if (mode === 'rename') namesDraft.value = newName.value
+  else namesDraft.value = createNames.value.join('\n')
+  namesEditorVisible.value = true
+}
+
+function openCreateNamesEditor() {
+  openNamesEditor('create')
+}
+
+function applyNamesDraft() {
+  const names = normalizeBranchNames(namesDraft.value)
+  if (namesEditorMode.value === 'delete') deleteNames.value = names
+  else if (namesEditorMode.value === 'rename') newName.value = names[0] || ''
+  else createNames.value = names
+  namesEditorVisible.value = false
 }
 
 // 汇总所选（或全部候选）工程的全部分支为去重排序列表，供「目标分支」下拉选择
@@ -251,6 +424,18 @@ const selectPlaceholder = computed(() => {
   if (!allBranches.value.length) return '未加载到分支，点「刷新」重试'
   return '选择基于哪个分支创建'
 })
+const namesEditorTitle = computed(() =>
+  namesEditorMode.value === 'delete'
+    ? '批量编辑要删除的分支名'
+    : namesEditorMode.value === 'rename'
+      ? '编辑新分支名'
+      : '批量编辑新分支名'
+)
+const undoActionText = computed(() => {
+  const map = { create: '创建', delete: '删除', rename: '重命名' }
+  return map[(branchUndo.value && branchUndo.value.action) || ''] || '操作'
+})
+const undoButtonText = computed(() => `撤回本次${undoActionText.value}`)
 
 // 打开弹窗：清空上次状态 + 自动加载全部分支
 watch(
@@ -259,6 +444,10 @@ watch(
     if (v) {
       results.value = []
       running.value = false
+      undoingBranch.value = false
+      stopBranchLogPolling(false)
+      branchLogs.value = []
+      fetchBranchUndo()
       loadAllBranches()
     }
   }
@@ -310,20 +499,22 @@ async function run() {
       ElMessage.warning('请先选择目标分支（基于哪个分支创建）')
       return
     }
-    call = api.branchCreate({
+    call = () => api.branchCreate({
       projects: payloads,
       branch_names: names,
       from_branch: from,
     })
   } else if (tab.value === 'delete') {
-    const bn = deleteName.value.trim()
-    if (!bn) {
+    const names = deleteNames.value
+      .map((n) => (n || '').trim())
+      .filter(Boolean)
+    if (!names.length) {
       ElMessage.warning('请填写要删除的分支名')
       return
     }
     try {
       await ElMessageBox.confirm(
-        `将删除所选 ${list.length} 个工程上的远程分支「${bn}」，该操作不可恢复，确定继续？`,
+        `将删除所选 ${list.length} 个工程上的 ${names.length} 个远程分支，确定继续？`,
         '删除分支确认',
         {
           type: 'warning',
@@ -335,7 +526,7 @@ async function run() {
     } catch {
       return // 用户取消
     }
-    call = api.branchDelete({ projects: payloads, branch_name: bn })
+    call = () => api.branchDelete({ projects: payloads, branch_names: names })
   } else {
     const oldn = oldName.value.trim()
     const newn = newName.value.trim()
@@ -343,7 +534,7 @@ async function run() {
       ElMessage.warning('请填写原分支名与新分支名')
       return
     }
-    call = api.branchRename({
+    call = () => api.branchRename({
       projects: payloads,
       old_name: oldn,
       new_name: newn,
@@ -353,8 +544,10 @@ async function run() {
   running.value = true
   results.value = []
   try {
-    const r = await call
+    await startBranchLogPolling()
+    const r = await call()
     results.value = r.results || []
+    if (['create', 'delete', 'rename'].includes(tab.value)) fetchBranchUndo()
     const fail = failCount.value
     if (fail === 0) ElMessage.success(`全部完成：${okCount.value} 个工程成功`)
     else if (okCount.value > 0) ElMessage.warning(`部分成功：成功 ${okCount.value}，失败 ${fail}`)
@@ -366,7 +559,47 @@ async function run() {
   } catch (e) {
     ElMessage.error('执行失败：' + e.message)
   } finally {
+    await stopBranchLogPolling()
     running.value = false
+  }
+}
+
+async function undoBranchOperation() {
+  if (running.value || undoingBranch.value) return
+  const items = (branchUndo.value && branchUndo.value.items) || []
+  if (!items.length) return
+  try {
+    await ElMessageBox.confirm(
+      `将撤回最近一次${undoActionText.value}的 ${items.length} 个远程分支，确定继续？`,
+      '撤回分支操作',
+      {
+        type: 'warning',
+        confirmButtonText: '确认撤回',
+        cancelButtonText: '取消',
+        confirmButtonClass: 'el-button--danger',
+      }
+    )
+  } catch {
+    return
+  }
+  undoingBranch.value = true
+  try {
+    await startBranchLogPolling()
+    const r = await api.branchUndoRun()
+    results.value = r.results || []
+    if (r.cleared) {
+      branchUndo.value = { has_undo: false }
+      ElMessage.success('已撤回本次分支操作')
+    } else {
+      await fetchBranchUndo()
+      ElMessage.warning('部分撤回失败，请检查结果')
+    }
+    selectedProjects.value.forEach((p) => projects.loadBranchesFor(p.id))
+  } catch (e) {
+    ElMessage.error('撤回分支操作失败：' + e.message)
+  } finally {
+    await stopBranchLogPolling()
+    undoingBranch.value = false
   }
 }
 </script>
@@ -504,6 +737,9 @@ async function run() {
   align-items: center;
   gap: 8px;
 }
+.bm-field-row > .el-button {
+  flex: none;
+}
 .bm-field-hint {
   margin-top: 5px;
   font-size: 11px;
@@ -531,6 +767,47 @@ async function run() {
 .bm-note {
   font-size: 12px;
   color: var(--muted);
+}
+.bm-undo-tip {
+  margin-top: -4px;
+  padding: 8px 10px;
+  border: 1px solid rgba(227, 179, 65, 0.35);
+  border-radius: 6px;
+  background: rgba(227, 179, 65, 0.08);
+  color: var(--yellow);
+  font-size: 12px;
+}
+.bm-live {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.bm-live-head {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+.bm-live-list {
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 6px 10px;
+}
+.bm-live-line {
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.6;
+  word-break: break-all;
+}
+.bm-live-line.warn {
+  color: var(--yellow);
+}
+.bm-live-line.error {
+  color: var(--danger);
 }
 
 /* 结果 */
@@ -586,6 +863,15 @@ async function run() {
 .bm-res.fail .bm-res-ico {
   color: var(--danger);
 }
+.bm-res-main {
+  min-width: 0;
+  flex: 1;
+}
+.bm-res-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
 .bm-res-name {
   color: var(--text);
   font-weight: 500;
@@ -597,6 +883,23 @@ async function run() {
 }
 .bm-res-msg {
   color: var(--muted);
+  word-break: break-all;
+}
+.bm-res-commands {
+  margin-top: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.bm-res-command {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.5;
   word-break: break-all;
 }
 </style>

@@ -1,0 +1,28 @@
+{
+  "action": "create",
+  "created_at": "2026-08-15 00:12:36",
+  "items": [
+    {
+      "name": "taxmpv5-front-stage",
+      "branch_name": "jushiv6-master",
+      "sha": "eb999c6b1c3d8ab2089e0b023710426a819d9327",
+      "project": {
+        "ssh_port": 22,
+        "local_dir_base": "./repos",
+        "remote": "origin",
+        "no_ff": true,
+        "push_on_success": true,
+        "stop_on_conflict": true,
+        "log_level": "INFO",
+        "name": "taxmpv5-front-stage",
+        "ssh_host": "ssh://git@38.76.216.46:42221/cuigm/taxmpv5-front-stage.git",
+        "project_path": "cuigm/taxmpv5-front-stage",
+        "source_branch": "v6-feature-20260630",
+        "local_dir": "/Users/zhaobei/Documents/jincai/v6/taxmpv5-front-stage",
+        "target_branches": [
+          "jushiv6-develop"
+        ]
+      }
+    }
+  ]
+}

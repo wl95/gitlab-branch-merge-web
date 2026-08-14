@@ -30,6 +30,8 @@ BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.ini"
 PROFILES_FILE = BASE_DIR / "profiles.json"
 UNDO_FILE = BASE_DIR / "merge_undo.json"
+BRANCH_OP_UNDO_FILE = BASE_DIR / "branch_op_undo.json"
+AUDIT_LOG_FILE = BASE_DIR / "danger_audit_log.json"
 gm.UNDO_FILE = str(UNDO_FILE)
 
 
@@ -53,6 +55,10 @@ class LogStore:
     def since(self, n):
         with self._lock:
             return [(eid, t) for eid, t in self._entries if eid > n]
+
+    def all(self):
+        with self._lock:
+            return list(self._entries)
 
     def clear(self):
         with self._lock:
@@ -387,6 +393,104 @@ def delete_profile(name):
             json.dump(data, f, ensure_ascii=False, indent=2)
 
 
+def save_branch_op_undo(action, items):
+    if not items:
+        return
+    with open(str(BRANCH_OP_UNDO_FILE), "w", encoding="utf-8") as f:
+        json.dump({
+            "action": action,
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "items": items,
+        }, f, ensure_ascii=False, indent=2)
+
+
+def load_branch_op_undo():
+    if not BRANCH_OP_UNDO_FILE.exists():
+        return None
+    try:
+        with open(str(BRANCH_OP_UNDO_FILE), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and data.get("items"):
+            return data
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def clear_branch_op_undo():
+    try:
+        if BRANCH_OP_UNDO_FILE.exists():
+            BRANCH_OP_UNDO_FILE.unlink()
+    except OSError:
+        pass
+
+
+def load_audit_logs():
+    if not AUDIT_LOG_FILE.exists():
+        return []
+    try:
+        with open(str(AUDIT_LOG_FILE), "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def append_audit_log(action, title, detail="", undo_type="", payload=None):
+    payload = payload or {}
+    logs = load_audit_logs()
+    logs.insert(0, {
+        "id": f"{int(time.time() * 1000)}-{len(logs)}",
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "title": title,
+        "detail": detail,
+        "undo_type": undo_type,
+        "payload": payload,
+        "commands": collect_commands(payload),
+    })
+    with open(str(AUDIT_LOG_FILE), "w", encoding="utf-8") as f:
+        json.dump(logs[:300], f, ensure_ascii=False, indent=2)
+
+
+def delete_audit_logs(ids):
+    idset = {str(i) for i in (ids or []) if str(i)}
+    if not idset:
+        return 0
+    logs = load_audit_logs()
+    kept = [x for x in logs if str(x.get("id")) not in idset]
+    removed = len(logs) - len(kept)
+    if removed:
+        with open(str(AUDIT_LOG_FILE), "w", encoding="utf-8") as f:
+            json.dump(kept, f, ensure_ascii=False, indent=2)
+    return removed
+
+
+def collect_commands(value):
+    commands = []
+
+    def walk(v):
+        if isinstance(v, dict):
+            for k, child in v.items():
+                if k == "commands" and isinstance(child, list):
+                    commands.extend(str(c) for c in child if c)
+                else:
+                    walk(child)
+        elif isinstance(v, list):
+            for child in v:
+                walk(child)
+
+    walk(value)
+    seen = set()
+    out = []
+    for cmd in commands:
+        if cmd in seen:
+            continue
+        seen.add(cmd)
+        out.append(cmd)
+    return out
+
+
 def suggest_profile_name(global_cfg):
     """根据全局目标分支自动生成方案名（目标分支同名）。"""
     g = global_cfg or {}
@@ -473,6 +577,13 @@ def start_merge(projects):
                     it["commits"] = commits
                     it["commit_count"] = len(commits)
                 gm.save_undo(all_undo)
+                append_audit_log(
+                    "merge",
+                    "执行合并",
+                    f"共 {len(projects)} 个工程，{len(all_undo)} 个分支可撤回",
+                    "merge",
+                    {"items": all_undo},
+                )
                 logging.info("已记录 %d 个分支的合并快照，可在界面撤回", len(all_undo))
             logging.info("任务结束：%s",
                          "全部成功" if ok_all else "存在失败，请人工检查")
@@ -585,6 +696,12 @@ class Handler(BaseHTTPRequestHandler):
             entries = log_store.since(since)
             new_since = entries[-1][0] if entries else since
             self._send_json({"logs": entries, "since": new_since})
+        elif path == "/api/logs/all":
+            entries = log_store.all()
+            new_since = entries[-1][0] if entries else 0
+            self._send_json({"logs": entries, "since": new_since})
+        elif path == "/api/audit/logs":
+            self._send_json({"ok": True, "logs": load_audit_logs()})
         elif path == "/api/clear":
             log_store.clear()
             self._send_json({"ok": True})
@@ -628,6 +745,30 @@ class Handler(BaseHTTPRequestHandler):
                     "commits": it.get("commits") or [],
                 } for it in data["items"]],
             })
+        elif path in ("/api/branch/undo", "/api/branch/create/undo"):
+            data = load_branch_op_undo()
+            if not data:
+                self._send_json({"ok": True, "has_undo": False})
+                return
+            self._send_json({
+                "ok": True,
+                "has_undo": True,
+                "action": data.get("action", ""),
+                "created_at": data.get("created_at", ""),
+                "items": [{
+                    "name": it.get("name", ""),
+                    "branch_name": it.get("branch_name", ""),
+                    "old_name": it.get("old_name", ""),
+                    "new_name": it.get("new_name", ""),
+                    "sha": (it.get("sha") or "")[:8],
+                    "project": {
+                        "name": (it.get("project") or {}).get("name", ""),
+                        "ssh_host": (it.get("project") or {}).get("ssh_host", ""),
+                        "project_path": (it.get("project") or {}).get("project_path", ""),
+                        "local_dir": (it.get("project") or {}).get("local_dir", ""),
+                    },
+                } for it in data.get("items", [])],
+            })
         elif not self._serve_dist(path):
             self.send_error(404)
 
@@ -661,35 +802,95 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "请填写要创建的分支名"}, code=400)
                 return
             results = []
+            undo_items = []
             for bn in branch_names:
                 for p in projects:
                     try:
-                        ok, msg = gm.create_branch(p, bn, from_branch or None)
+                        ok, msg, commands, meta = gm.create_branch(p, bn, from_branch or None)
                         results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": True, "message": msg})
+                                        "ok": True, "message": msg,
+                                        "commands": commands})
+                        undo_items.append({
+                            "name": p["name"],
+                            "branch_name": meta["branch_name"],
+                            "sha": meta["sha"],
+                            "project": p,
+                        })
                     except Exception as e:
                         results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": False, "error": str(e)})
+                                        "ok": False, "error": str(e),
+                                        "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("create", undo_items)
+                append_audit_log(
+                    "branch_create",
+                    "创建分支",
+                    f"基于 {from_branch} 创建：{', '.join(branch_names)}；成功 {len(undo_items)} 个远程分支",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "branch_names": branch_names,
+                            "from_branch": from_branch,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "create",
-                             "branch_names": branch_names, "results": results})
+                             "branch_names": branch_names, "results": results,
+                             "undo_count": len(undo_items)})
         elif parsed.path == "/api/branch/delete":
             projects = normalize_projects(body.get("projects", []))
-            branch_name = (body.get("branch_name") or "").strip()
+            raw = body.get("branch_names")
+            if raw is None:
+                raw = body.get("branch_name") or ""
+            if isinstance(raw, str):
+                raw = [s for s in raw.replace("\n", ",").split(",") if s.strip()]
+            branch_names = [str(s).strip() for s in raw if str(s).strip()]
             if not projects:
                 self._send_json({"ok": False, "error": "请至少选择一个工程"}, code=400)
                 return
-            if not branch_name:
+            if not branch_names:
                 self._send_json({"ok": False, "error": "请填写要删除的分支名"}, code=400)
                 return
             results = []
-            for p in projects:
-                try:
-                    ok, msg = gm.delete_branch(p, branch_name)
-                    results.append({"name": p["name"], "ok": True, "message": msg})
-                except Exception as e:
-                    results.append({"name": p["name"], "ok": False, "error": str(e)})
+            undo_items = []
+            for bn in branch_names:
+                for p in projects:
+                    try:
+                        ok, msg, commands, meta = gm.delete_branch(p, bn)
+                        results.append({"name": f"{p['name']}（{bn}）", "ok": True,
+                                        "message": msg, "commands": commands})
+                        undo_items.append({
+                            "name": p["name"],
+                            "branch_name": meta["branch_name"],
+                            "sha": meta["sha"],
+                            "project": p,
+                        })
+                    except Exception as e:
+                        results.append({"name": f"{p['name']}（{bn}）", "ok": False,
+                                        "error": str(e),
+                                        "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("delete", undo_items)
+                append_audit_log(
+                    "branch_delete",
+                    "删除分支",
+                    f"删除分支：{', '.join(branch_names)}；成功 {len(undo_items)} 个远程分支，可按原 SHA 恢复",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "branch_names": branch_names,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "delete",
-                             "branch_name": branch_name, "results": results})
+                             "branch_names": branch_names, "results": results,
+                             "undo_count": len(undo_items)})
         elif parsed.path == "/api/branch/rename":
             projects = normalize_projects(body.get("projects", []))
             old_name = (body.get("old_name") or "").strip()
@@ -704,15 +905,89 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "请填写新分支名"}, code=400)
                 return
             results = []
+            undo_items = []
             for p in projects:
                 try:
-                    ok, msg = gm.rename_branch(p, old_name, new_name)
-                    results.append({"name": p["name"], "ok": True, "message": msg})
+                    ok, msg, commands, meta = gm.rename_branch(p, old_name, new_name)
+                    results.append({"name": p["name"], "ok": True, "message": msg,
+                                    "commands": commands})
+                    undo_items.append({
+                        "name": p["name"],
+                        "old_name": meta["old_name"],
+                        "new_name": meta["new_name"],
+                        "sha": meta["sha"],
+                        "project": p,
+                    })
                 except Exception as e:
-                    results.append({"name": p["name"], "ok": False, "error": str(e)})
+                    results.append({"name": p["name"], "ok": False, "error": str(e),
+                                    "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("rename", undo_items)
+                append_audit_log(
+                    "branch_rename",
+                    "重命名分支",
+                    f"{old_name} -> {new_name}；成功重命名 {len(undo_items)} 个远程分支",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "old_name": old_name,
+                            "new_name": new_name,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "rename",
                              "old_name": old_name, "new_name": new_name,
-                             "results": results})
+                             "results": results, "undo_count": len(undo_items)})
+        elif parsed.path in ("/api/branch/undo", "/api/branch/create/undo"):
+            data = load_branch_op_undo()
+            items = (data or {}).get("items") or []
+            if not items:
+                self._send_json({"ok": False, "error": "暂无可撤回的分支操作记录"}, code=400)
+                return
+            action = data.get("action")
+            results = []
+            for it in items:
+                p = it.get("project") or {}
+                label = it.get("name") or p.get("name") or p.get("ssh_host")
+                try:
+                    if action == "create":
+                        branch_name = (it.get("branch_name") or "").strip()
+                        ok, msg, commands, _meta = gm.delete_branch(
+                            p, branch_name, allow_protected=True)
+                        name = f"{label}（{branch_name}）"
+                    elif action == "delete":
+                        branch_name = (it.get("branch_name") or "").strip()
+                        ok, msg, commands, _meta = gm.create_branch_at_sha(
+                            p, branch_name, it.get("sha"))
+                        name = f"{label}（{branch_name}）"
+                    elif action == "rename":
+                        old_name = (it.get("old_name") or "").strip()
+                        new_name = (it.get("new_name") or "").strip()
+                        ok, msg, commands, _meta = gm.rename_branch(
+                            p, new_name, old_name, allow_protected_old=True)
+                        name = f"{label}（{new_name} → {old_name}）"
+                    else:
+                        raise RuntimeError("未知的分支撤回类型")
+                    results.append({"name": name, "ok": True,
+                                    "message": msg, "commands": commands})
+                except Exception as e:
+                    results.append({"name": label, "ok": False, "error": str(e),
+                                    "commands": getattr(e, "commands", [])})
+            if all(r.get("ok") for r in results):
+                clear_branch_op_undo()
+                append_audit_log(
+                    f"undo_{action}",
+                    "撤回分支操作",
+                    f"已撤回 {len(results)} 个远程分支操作",
+                    "",
+                    {"action": action},
+                )
+            self._send_json({"ok": True, "action": f"undo_{action}",
+                             "results": results,
+                             "cleared": all(r.get("ok") for r in results)})
         elif parsed.path == "/api/scan":
             folder = (body.get("folder") or "").strip()
             if not folder:
@@ -734,6 +1009,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"ok": True,
                              "projects": load_projects(),
                              "global": load_global()})
+        elif parsed.path == "/api/audit/log":
+            append_audit_log(
+                body.get("action") or "frontend",
+                body.get("title") or "危险操作",
+                body.get("detail") or "",
+                body.get("undo_type") or "",
+                body.get("payload") if isinstance(body.get("payload"), dict) else {},
+            )
+            self._send_json({"ok": True})
+        elif parsed.path == "/api/audit/log/delete":
+            ids = body.get("ids") or []
+            if isinstance(ids, str):
+                ids = [ids]
+            removed = delete_audit_logs(ids)
+            self._send_json({"ok": True, "removed": removed})
         elif parsed.path == "/api/profile/save":
             name = (body.get("name") or "").strip()
             projects = normalize_projects(body.get("projects", []))
@@ -767,7 +1057,28 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send_json({"ok": False, "error": "缺少方案名称"}, code=400)
                 return
+            data = load_profiles()
+            if name in data:
+                append_audit_log(
+                    "profile_delete",
+                    "删除配置方案",
+                    f"删除方案「{name}」",
+                    "profile_delete",
+                    {"name": name, "profile": data[name]},
+                )
             delete_profile(name)
+            self._send_json({"ok": True})
+        elif parsed.path == "/api/profile/restore":
+            name = (body.get("name") or "").strip()
+            profile = body.get("profile")
+            if not name or not isinstance(profile, dict):
+                self._send_json({"ok": False, "error": "缺少方案恢复数据"}, code=400)
+                return
+            data = load_profiles()
+            data[name] = profile
+            with open(str(PROFILES_FILE), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            append_audit_log("profile_restore", "恢复配置方案", f"恢复方案「{name}」")
             self._send_json({"ok": True})
         elif parsed.path == "/api/commits":
             branch = (body.get("branch") or "").strip()
@@ -842,6 +1153,18 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 conf = normalize_projects([body])[0]
                 msg = gm.cherry_pick_commits(conf, commits, target)
+                append_audit_log(
+                    "cherry_pick",
+                    "Cherry-Pick",
+                    f"{conf.get('name') or conf.get('ssh_host')} -> {target}，{len(commits)} 个 commit",
+                    "",
+                    {
+                        "project": conf,
+                        "target_branch": target,
+                        "commits": commits,
+                        "message": msg,
+                    },
+                )
                 self._send_json({"ok": True, "message": msg})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"pick 失败: {e}"}, code=400)
@@ -883,6 +1206,13 @@ class Handler(BaseHTTPRequestHandler):
                                  "全部成功" if ok_all else "存在失败，请人工检查")
                     # 撤回完成后清除快照，避免重复撤回
                     gm.clear_undo()
+                    append_audit_log(
+                        "undo_merge",
+                        "撤回合并",
+                        "已执行最近一次合并撤回" if ok_all else "合并撤回存在失败",
+                        "",
+                        {},
+                    )
                 finally:
                     with STATE["lock"]:
                         STATE["busy"] = False

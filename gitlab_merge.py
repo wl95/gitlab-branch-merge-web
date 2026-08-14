@@ -44,6 +44,16 @@ _GIT_ENV["GIT_TERMINAL_PROMPT"] = "0"
 _GIT_ENV.setdefault("GIT_EDITOR", "true")
 
 
+class BranchCommandError(RuntimeError):
+    def __init__(self, message, commands=None):
+        super().__init__(message)
+        self.commands = commands or []
+
+
+def format_git_command(args, cwd):
+    return " ".join(["git", "-C", str(cwd)] + [str(a) for a in args])
+
+
 def run_git(args, cwd, check=True, timeout=None):
     """执行一条 git 命令，返回 CompletedProcess。
 
@@ -367,14 +377,17 @@ def merge_branch(remote, source, target, conf, local_dir, dry_run):
         logging.info("[演练] 将执行: git %s", " ".join(merge_args))
         return True, None, None
 
+    logging.info("执行命令: %s", format_git_command(merge_args, local_dir))
     proc = run_git(merge_args, local_dir, check=False)
     if proc.returncode != 0:
         if "CONFLICT" in proc.stdout:
             logging.error("[%s] 合并冲突:\n%s", conf["name"], proc.stdout)
+            logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
             run_git(["merge", "--abort"], local_dir, check=False)
             logging.info("已执行 git merge --abort 回滚")
         else:
             logging.error("[%s] 合并失败:\n%s", conf["name"], proc.stdout)
+            logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
             run_git(["merge", "--abort"], local_dir, check=False)
         return False, before_sha, None
 
@@ -385,6 +398,7 @@ def merge_branch(remote, source, target, conf, local_dir, dry_run):
         if dry_run:
             logging.info("[演练] 将执行: git push %s %s", remote, target)
             return True, before_sha, after_sha
+        logging.info("执行命令: %s", format_git_command(["push", remote, target], local_dir))
         push = run_git(["push", remote, target], local_dir, check=False)
         if push.returncode != 0:
             logging.error("[%s] 推送失败:\n%s", conf["name"], push.stdout)
@@ -548,16 +562,56 @@ def create_branch(conf, branch_name, from_branch=None, remote=None):
     if not src_sha:
         raise RuntimeError(f"无法解析源分支 SHA: {from_branch}")
 
+    commands = [
+        format_git_command(["push", remote, f"{src_sha}:refs/heads/{name}"], local_dir),
+        format_git_command(["branch", name, src_sha], local_dir),
+    ]
+    logging.info("执行命令: %s", commands[0])
     push = run_git(["push", remote, f"{src_sha}:refs/heads/{name}"],
                    local_dir, check=False)
     if push.returncode != 0:
-        raise RuntimeError(f"创建分支失败: {push.stdout.strip()}")
+        raise BranchCommandError(f"创建分支失败: {push.stdout.strip()}", commands[:1])
     # 本地同步建引用（失败不影响结果，仅用于本地后续操作方便）
+    logging.info("执行命令: %s", commands[1])
     run_git(["branch", name, src_sha], local_dir, check=False)
-    return True, f"已创建并推送分支 {name}（基于 {from_branch}）"
+    return True, f"已创建并推送分支 {name}（基于 {from_branch}）", commands, {
+        "branch_name": name,
+        "from_branch": from_branch,
+        "sha": src_sha,
+    }
 
 
-def delete_branch(conf, branch_name, remote=None):
+def create_branch_at_sha(conf, branch_name, sha, remote=None):
+    """按指定 SHA 恢复/创建远程分支，用于撤回删除分支。"""
+    name = _validate_branch_name(branch_name)
+    sha = (sha or "").strip()
+    if not sha:
+        raise RuntimeError("缺少用于恢复分支的 SHA")
+    remote = remote or conf.get("remote") or "origin"
+    local_dir = ensure_repo(conf, check_branches=False)
+
+    heads = _remote_heads(local_dir, remote)
+    if name in heads:
+        raise RuntimeError(f"远程分支已存在: {name}")
+
+    commands = [
+        format_git_command(["push", remote, f"{sha}:refs/heads/{name}"], local_dir),
+        format_git_command(["branch", name, sha], local_dir),
+    ]
+    logging.info("执行命令: %s", commands[0])
+    push = run_git(["push", remote, f"{sha}:refs/heads/{name}"],
+                   local_dir, check=False)
+    if push.returncode != 0:
+        raise BranchCommandError(f"恢复分支失败: {push.stdout.strip()}", commands[:1])
+    logging.info("执行命令: %s", commands[1])
+    run_git(["branch", name, sha], local_dir, check=False)
+    return True, f"已恢复远程分支 {name}", commands, {
+        "branch_name": name,
+        "sha": sha,
+    }
+
+
+def delete_branch(conf, branch_name, remote=None, allow_protected=False):
     """删除指定工程的远程分支；本地若存在同名分支且非当前检出分支则一并删除。
 
     返回 (ok, message)。
@@ -565,7 +619,7 @@ def delete_branch(conf, branch_name, remote=None):
     name = (branch_name or "").strip()
     if not name:
         raise RuntimeError("请指定要删除的分支")
-    if name in PROTECTED_BRANCHES:
+    if name in PROTECTED_BRANCHES and not allow_protected:
         raise RuntimeError(f"受保护分支，禁止删除: {name}")
     remote = remote or conf.get("remote") or "origin"
     local_dir = ensure_repo(conf, check_branches=False)
@@ -573,23 +627,35 @@ def delete_branch(conf, branch_name, remote=None):
     heads = _remote_heads(local_dir, remote)
     if name not in heads:
         raise RuntimeError(f"远程分支不存在: {name}")
+    old_sha = _resolve_branch_ref(local_dir, name, remote)
+    if not old_sha:
+        raise RuntimeError(f"无法解析待删除分支 SHA: {name}")
 
+    commands = [
+        format_git_command(["push", remote, "--delete", name], local_dir),
+        format_git_command(["branch", "-D", name], local_dir),
+    ]
+    logging.info("执行命令: %s", commands[0])
     push = run_git(["push", remote, "--delete", name], local_dir, check=False)
     if push.returncode != 0:
-        raise RuntimeError(f"删除远程分支失败: {push.stdout.strip()}")
+        raise BranchCommandError(f"删除远程分支失败: {push.stdout.strip()}", commands[:1])
 
     msgs = []
     cur = run_git(["rev-parse", "--abbrev-ref", "HEAD"],
                   local_dir, check=False).stdout.strip()
+    logging.info("执行命令: %s", commands[1])
     delp = run_git(["branch", "-D", name], local_dir, check=False)
     if delp.returncode == 0:
         msgs.append("本地同名分支已删除")
     elif cur == name:
         msgs.append("本地正检出该分支，未自动删除")
-    return True, f"已删除远程分支 {name}" + (f"（{'；'.join(msgs)}）" if msgs else "")
+    return True, f"已删除远程分支 {name}" + (f"（{'；'.join(msgs)}）" if msgs else ""), commands, {
+        "branch_name": name,
+        "sha": old_sha,
+    }
 
 
-def rename_branch(conf, old_name, new_name, remote=None):
+def rename_branch(conf, old_name, new_name, remote=None, allow_protected_old=False):
     """重命名远程分支：新名指向旧名 commit，再删除旧名，本地同名分支同步重命名。
 
     返回 (ok, message)。
@@ -600,7 +666,7 @@ def rename_branch(conf, old_name, new_name, remote=None):
         raise RuntimeError("请指定要重命名的原分支")
     if old == new:
         raise RuntimeError("新分支名不能与原分支相同")
-    if old in PROTECTED_BRANCHES:
+    if old in PROTECTED_BRANCHES and not allow_protected_old:
         raise RuntimeError(f"受保护分支，禁止重命名: {old}")
     remote = remote or conf.get("remote") or "origin"
     local_dir = ensure_repo(conf, check_branches=False)
@@ -615,16 +681,28 @@ def rename_branch(conf, old_name, new_name, remote=None):
     if not old_sha:
         raise RuntimeError(f"无法解析原分支 SHA: {old}")
 
+    commands = [
+        format_git_command(["push", remote, f"{old_sha}:refs/heads/{new}"], local_dir),
+        format_git_command(["push", remote, "--delete", old], local_dir),
+        format_git_command(["branch", "-m", old, new], local_dir),
+    ]
+    logging.info("执行命令: %s", commands[0])
     push = run_git(["push", remote, f"{old_sha}:refs/heads/{new}"],
                    local_dir, check=False)
     if push.returncode != 0:
-        raise RuntimeError(f"创建新分支失败: {push.stdout.strip()}")
+        raise BranchCommandError(f"创建新分支失败: {push.stdout.strip()}", commands[:1])
+    logging.info("执行命令: %s", commands[1])
     delp = run_git(["push", remote, "--delete", old], local_dir, check=False)
     if delp.returncode != 0:
-        raise RuntimeError(f"新分支 {new} 已创建，但删除旧分支 {old} 失败: "
-                           f"{delp.stdout.strip()}")
+        raise BranchCommandError(f"新分支 {new} 已创建，但删除旧分支 {old} 失败: "
+                                 f"{delp.stdout.strip()}", commands[:2])
+    logging.info("执行命令: %s", commands[2])
     run_git(["branch", "-m", old, new], local_dir, check=False)
-    return True, f"已将远程分支 {old} 重命名为 {new}"
+    return True, f"已将远程分支 {old} 重命名为 {new}", commands, {
+        "old_name": old,
+        "new_name": new,
+        "sha": old_sha,
+    }
 
 
 # ---------------------------------------------------------------- 撤回合并（undo）
@@ -942,13 +1020,16 @@ def cherry_pick_commits(conf, commits, target_branch, dry_run=False):
 
     picked = []
     for sha in commits:
+        logging.info("执行命令: %s", format_git_command(["cherry-pick", sha], local_dir))
         proc = run_git(["cherry-pick", sha], str(local_dir), check=False)
         if proc.returncode != 0:
+            logging.info("执行命令: %s", format_git_command(["cherry-pick", "--abort"], local_dir))
             run_git(["cherry-pick", "--abort"], str(local_dir), check=False)
             raise SystemExit(f"cherry-pick {sha[:8]} 失败/冲突: {proc.stdout.strip()}")
         picked.append(sha)
 
     if conf["push_on_success"]:
+        logging.info("执行命令: %s", format_git_command(["push", remote, target_branch], local_dir))
         push = run_git(["push", remote, target_branch], str(local_dir), check=False)
         if push.returncode != 0:
             raise SystemExit(f"推送失败: {push.stdout.strip()}")

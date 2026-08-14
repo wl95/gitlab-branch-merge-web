@@ -11,11 +11,32 @@
 
         <section class="workspace-content">
           <div class="section-title">
-            <div>
+            <div class="section-heading">
               工程配置
               <span class="section-sub">逐个确认 SSH、源分支和目标分支</span>
             </div>
-            <span class="count">{{ projects.count }} 个工程</span>
+            <div class="section-actions">
+              <el-checkbox
+                :model-value="allProjectsChecked"
+                :indeterminate="someProjectsChecked"
+                :disabled="!projects.count || merge.busy"
+                @change="toggleAllProjects"
+              >
+                全选
+              </el-checkbox>
+              <el-button
+                type="danger"
+                plain
+                size="small"
+                :disabled="!selectedProjectCount || merge.busy"
+                @click="removeSelectedProjects"
+              >
+                删除已勾选
+              </el-button>
+              <span class="count">
+                {{ selectedProjectCount ? `已选 ${selectedProjectCount} / ` : '' }}{{ projects.count }} 个工程
+              </span>
+            </div>
           </div>
 
           <div v-if="!projects.count" class="empty-cards">
@@ -42,9 +63,10 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { useProjectsStore } from './stores/projects'
 import { useMergeStore } from './stores/merge'
+import { api } from './api'
 import AppHeader from './components/AppHeader.vue'
 import ScanPanel from './components/ScanPanel.vue'
 import ProfilePanel from './components/ProfilePanel.vue'
@@ -62,6 +84,38 @@ const merge = useMergeStore()
 const appStyle = computed(() => ({
   paddingRight: merge.collapsed ? '72px' : '364px',
 }))
+
+const selectedProjectCount = computed(() => projects.projects.filter((p) => p.checked).length)
+const allProjectsChecked = computed(() => projects.count > 0 && selectedProjectCount.value === projects.count)
+const someProjectsChecked = computed(() => selectedProjectCount.value > 0 && selectedProjectCount.value < projects.count)
+
+function toggleAllProjects(checked) {
+  projects.setAllChecked(checked)
+}
+
+function removeSelectedProjects() {
+  const count = selectedProjectCount.value
+  if (!count) return
+  ElMessageBox.confirm(
+    `确定删除已勾选的 ${count} 个工程吗？`,
+    '批量删除工程',
+    { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+  )
+    .then(async () => {
+      const removed = projects.removeCheckedProjects()
+      if (removed.length) {
+        await api.auditLog({
+          action: 'project_delete',
+          title: '批量删除工程',
+          detail: `删除 ${removed.length} 个工程配置`,
+          undo_type: 'project_delete',
+          payload: { projects: removed },
+        })
+        ElMessage.success(`已删除 ${removed.length} 个工程`)
+      }
+    })
+    .catch(() => {})
+}
 
 onMounted(async () => {
   merge.restoreCollapsed()

@@ -101,7 +101,39 @@ export const useProjectsStore = defineStore('projects', {
 
     removeProject(id) {
       const i = this.projects.findIndex((p) => p.id === id)
-      if (i >= 0) this.projects.splice(i, 1)
+      if (i < 0) return null
+      const [removed] = this.projects.splice(i, 1)
+      return removed
+    },
+
+    setAllChecked(checked) {
+      this.projects.forEach((p) => {
+        p.checked = checked
+      })
+    },
+
+    removeCheckedProjects() {
+      const removed = this.projects.filter((p) => p.checked)
+      if (!removed.length) return []
+      this.projects = this.projects.filter((p) => !p.checked)
+      return removed
+    },
+
+    restoreProjects(list) {
+      const restored = []
+      ;(list || []).forEach((data) => {
+        const p = this.addProject({
+          name: data.name || '',
+          ssh_host: data.ssh_host || '',
+          project_path: data.project_path || '',
+          local_dir: data.local_dir || '',
+        })
+        p.source_branch = data.source_branch || ''
+        p.target_branches = Array.isArray(data.target_branches) ? [...data.target_branches] : []
+        p.checked = false
+        restored.push(p)
+      })
+      return restored
     },
 
     setBranches(id, branches) {

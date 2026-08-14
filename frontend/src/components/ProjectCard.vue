@@ -107,6 +107,7 @@ import { useProjectsStore } from '../stores/projects'
 import { useMergeStore } from '../stores/merge'
 import { usePickStore } from '../stores/pick'
 import { useCommitsViewStore } from '../stores/commitsView'
+import { api } from '../api'
 
 const props = defineProps({
   project: { type: Object, required: true },
@@ -206,7 +207,18 @@ function removeProject() {
     '删除工程',
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
   )
-    .then(() => store.removeProject(p.id))
+    .then(async () => {
+      const removed = store.removeProject(p.id)
+      if (removed) {
+        await api.auditLog({
+          action: 'project_delete',
+          title: '删除工程',
+          detail: `删除工程「${removed.name || removed.ssh_host || '未命名'}」`,
+          undo_type: 'project_delete',
+          payload: { projects: [removed] },
+        })
+      }
+    })
     .catch(() => {})
 }
 </script>
