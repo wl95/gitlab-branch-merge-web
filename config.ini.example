@@ -1,0 +1,26 @@
+# GitLab 分支批量合并 - 配置示例
+# 复制为 config.ini 后按实际环境修改
+# 本文件为模板，不含真实地址，可安全提交到仓库
+
+[default]
+ssh_port = 22
+local_dir_base = ./repos
+remote = origin
+no_ff = true
+push_on_success = true
+stop_on_conflict = true
+log_level = INFO
+
+[global]
+# 全局 SSH 地址（留空则各工程必须各自填写）
+ssh_host =
+source_branch =
+target_branches =
+
+# 每个工程一段，命名规则 [project:工程名]
+[project:example]
+ssh_host = ssh://git@your-gitlab-host:port/group/example.git
+project_path = group/example
+source_branch = feature/xxx
+target_branches = develop,release
+local_dir = ./repos/example

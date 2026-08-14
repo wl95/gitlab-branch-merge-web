@@ -1,0 +1,16 @@
+# ===== 运行时数据 =====
+repos/
+__pycache__/
+*.pyc
+
+# ===== 本地配置（含内网 SSH 地址 / 本地路径，不入库）=====
+config.ini
+profiles.json
+
+# ===== 前端构建产物与依赖（clone 后 npm install && npm run build 生成）=====
+dist/
+frontend/node_modules/
+
+# ===== 系统与日志 =====
+.DS_Store
+*.log
