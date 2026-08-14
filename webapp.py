@@ -31,6 +31,8 @@ CONFIG_FILE = BASE_DIR / "config.ini"
 PROFILES_FILE = BASE_DIR / "profiles.json"
 UNDO_FILE = BASE_DIR / "merge_undo.json"
 gm.UNDO_FILE = str(UNDO_FILE)
+BRANCH_UNDO_FILE = BASE_DIR / "branch_undo.json"
+gm.BRANCH_UNDO_FILE = str(BRANCH_UNDO_FILE)
 
 
 # ---------------------------------------------------------------- 日志存储
@@ -588,6 +590,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/clear":
             log_store.clear()
             self._send_json({"ok": True})
+        elif path == "/api/branch/undo":
+            # 查询分支操作（创建/删除/重命名）的撤回记录列表
+            self._send_json({"ok": True, "records": gm.load_branch_undo()})
         elif path == "/api/merge/undo":
             # 查询最近一次合并的可撤回记录
             data = gm.load_undo()
@@ -661,35 +666,65 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "请填写要创建的分支名"}, code=400)
                 return
             results = []
+            undo_items = []
             for bn in branch_names:
                 for p in projects:
                     try:
                         ok, msg = gm.create_branch(p, bn, from_branch or None)
                         results.append({"name": f"{p['name']}（{bn}）",
                                         "ok": True, "message": msg})
+                        undo_items.append({
+                            "action": "create", "project": p,
+                            "branch": bn, "remote": p.get("remote") or "origin",
+                        })
                     except Exception as e:
                         results.append({"name": f"{p['name']}（{bn}）",
                                         "ok": False, "error": str(e)})
+            undo_id = gm.save_branch_undo_record(
+                "create", f"创建分支：{'、'.join(branch_names)}",
+                undo_items) if undo_items else None
             self._send_json({"ok": True, "action": "create",
-                             "branch_names": branch_names, "results": results})
+                             "branch_names": branch_names, "undo_id": undo_id,
+                             "results": results})
         elif parsed.path == "/api/branch/delete":
             projects = normalize_projects(body.get("projects", []))
-            branch_name = (body.get("branch_name") or "").strip()
+            raw = body.get("branch_names")
+            if raw is None:
+                raw = body.get("branch_name") or ""
+            if isinstance(raw, str):
+                # 兼容单个分支名；也支持用逗号/换行分隔的多个名字
+                raw = [s for s in raw.replace("\n", ",").split(",") if s.strip()]
+            branch_names = [str(s).strip() for s in raw if str(s).strip()]
             if not projects:
                 self._send_json({"ok": False, "error": "请至少选择一个工程"}, code=400)
                 return
-            if not branch_name:
+            if not branch_names:
                 self._send_json({"ok": False, "error": "请填写要删除的分支名"}, code=400)
                 return
             results = []
-            for p in projects:
-                try:
-                    ok, msg = gm.delete_branch(p, branch_name)
-                    results.append({"name": p["name"], "ok": True, "message": msg})
-                except Exception as e:
-                    results.append({"name": p["name"], "ok": False, "error": str(e)})
+            undo_items = []
+            for bn in branch_names:
+                for p in projects:
+                    try:
+                        sha = gm.branch_sha(p, bn)
+                        ok, msg = gm.delete_branch(p, bn)
+                        results.append({"name": f"{p['name']}（{bn}）",
+                                        "ok": True, "message": msg})
+                        if sha:
+                            undo_items.append({
+                                "action": "delete", "project": p,
+                                "branch": bn, "sha": sha,
+                                "remote": p.get("remote") or "origin",
+                            })
+                    except Exception as e:
+                        results.append({"name": f"{p['name']}（{bn}）",
+                                        "ok": False, "error": str(e)})
+            undo_id = gm.save_branch_undo_record(
+                "delete", f"删除分支：{'、'.join(branch_names)}",
+                undo_items) if undo_items else None
             self._send_json({"ok": True, "action": "delete",
-                             "branch_name": branch_name, "results": results})
+                             "branch_names": branch_names, "undo_id": undo_id,
+                             "results": results})
         elif parsed.path == "/api/branch/rename":
             projects = normalize_projects(body.get("projects", []))
             old_name = (body.get("old_name") or "").strip()
@@ -704,14 +739,45 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "请填写新分支名"}, code=400)
                 return
             results = []
+            undo_items = []
             for p in projects:
                 try:
                     ok, msg = gm.rename_branch(p, old_name, new_name)
                     results.append({"name": p["name"], "ok": True, "message": msg})
+                    undo_items.append({
+                        "action": "rename", "project": p,
+                        "branch": new_name, "old_name": old_name,
+                        "remote": p.get("remote") or "origin",
+                    })
                 except Exception as e:
                     results.append({"name": p["name"], "ok": False, "error": str(e)})
+            undo_id = gm.save_branch_undo_record(
+                "rename", f"重命名分支：{old_name} → {new_name}",
+                undo_items) if undo_items else None
             self._send_json({"ok": True, "action": "rename",
                              "old_name": old_name, "new_name": new_name,
+                             "undo_id": undo_id, "results": results})
+        elif parsed.path == "/api/branch/undo":
+            # 执行分支操作撤回：逐条执行逆向操作，同步返回结果
+            undo_id = (body.get("undo_id") or "").strip()
+            records = gm.load_branch_undo()
+            rec = next((r for r in records if r.get("id") == undo_id), None)
+            if not rec:
+                self._send_json({"ok": False, "error": "撤回记录不存在或已过期"}, code=404)
+                return
+            results = []
+            for item in rec.get("items", []):
+                pname = (item.get("project") or {}).get("name", "")
+                branch = item.get("branch") or ""
+                label = f"{pname}（{branch}）" if pname else branch
+                try:
+                    msg = gm.undo_branch_item(item)
+                    results.append({"name": label, "ok": True, "message": msg})
+                except Exception as e:
+                    results.append({"name": label, "ok": False, "error": str(e)})
+            gm.remove_branch_undo(undo_id)
+            self._send_json({"ok": True, "action": rec.get("action"),
+                             "undo_id": undo_id, "desc": rec.get("desc"),
                              "results": results})
         elif parsed.path == "/api/scan":
             folder = (body.get("folder") or "").strip()

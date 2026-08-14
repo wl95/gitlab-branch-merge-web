@@ -34,6 +34,7 @@ export const api = {
   branchCreate: (payload) => request('/branch/create', 'POST', payload),
   branchDelete: (payload) => request('/branch/delete', 'POST', payload),
   branchRename: (payload) => request('/branch/rename', 'POST', payload),
+  branchUndo: (payload) => request('/branch/undo', 'POST', payload),
   clear: () => request('/clear', 'POST', {}),
   logs: (since) => request(`/logs?since=${since}`),
   profiles: () => request('/profiles'),

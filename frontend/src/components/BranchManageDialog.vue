@@ -57,10 +57,9 @@
                 allow-create
                 default-first-option
                 :reserve-keyword="false"
+                :no-data-text="'输入分支名后按回车或逗号添加，可添加多个'"
                 placeholder="输入分支名后按回车或逗号添加，可添加多个"
-              >
-                <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
-              </el-select>
+              />
               <div class="bm-field-hint">
                 可输入多个分支名，每个分支都将基于所选目标分支创建；留空目标分支则使用各工程源分支
               </div>
@@ -97,12 +96,21 @@
         <el-tab-pane label="删除分支" name="delete">
           <div class="bm-form">
             <div class="bm-field">
-              <label>要删除的分支名</label>
-              <el-input
-                v-model="deleteName"
-                placeholder="例如：feature/expired-branch"
-                @keyup.enter="run"
-              />
+              <label>要删除的分支名（可多个）</label>
+              <el-select
+                v-model="deleteNames"
+                multiple
+                filterable
+                allow-create
+                default-first-option
+                :reserve-keyword="false"
+                placeholder="输入分支名后按回车或逗号添加，可添加多个"
+              >
+                <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
+              </el-select>
+              <div class="bm-field-hint">
+                可输入多个分支名，将批量删除所选工程上的这些远程分支
+              </div>
             </div>
             <div class="bm-tip danger">
               将删除所选工程上的远程分支。受保护分支（master / main / develop / release 等）禁止删除。
@@ -155,6 +163,34 @@
           </div>
         </div>
       </div>
+
+      <!-- 撤回本次操作 -->
+      <div v-if="lastUndo" class="bm-undo">
+        <el-button type="warning" plain :loading="undoing" @click="undoRun">
+          <el-icon style="margin-right: 4px"><RefreshLeft /></el-icon>
+          撤回本次{{ actionLabel }}操作
+        </el-button>
+        <span class="bm-undo-note">
+          将自动执行逆向操作（创建→删除、删除→恢复原提交、重命名→改回原名），并实时报告结果
+        </span>
+      </div>
+      <div v-if="undoResults.length" class="bm-results">
+        <div class="bm-res-head">
+          撤回结果
+          <span class="bm-ok">成功 {{ undoOkCount }}</span>
+          <span class="bm-fail">失败 {{ undoFailCount }}</span>
+        </div>
+        <div class="bm-res-list">
+          <div v-for="(r, i) in undoResults" :key="i" class="bm-res" :class="r.ok ? 'ok' : 'fail'">
+            <el-icon class="bm-res-ico">
+              <CircleCheckFilled v-if="r.ok" />
+              <CircleCloseFilled v-else />
+            </el-icon>
+            <span class="bm-res-name">{{ r.name }}</span>
+            <span class="bm-res-msg">{{ r.ok ? r.message : r.error }}</span>
+          </div>
+        </div>
+      </div>
     </div>
   </el-dialog>
 </template>
@@ -165,6 +201,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Operation,
   Refresh,
+  RefreshLeft,
   CircleCheckFilled,
   CircleCloseFilled,
 } from '@element-plus/icons-vue'
@@ -181,12 +218,15 @@ const projects = useProjectsStore()
 const tab = ref('create')
 const running = ref(false)
 const results = ref([])
+const lastUndo = ref(null) // { id, action } 最近一次可撤回操作
+const undoResults = ref([])
+const undoing = ref(false)
 
 const createNames = ref([])
 const createFrom = ref('')
 const allBranches = ref([])
 const loadingBranches = ref(false)
-const deleteName = ref('')
+const deleteNames = ref([])
 const oldName = ref('')
 const newName = ref('')
 
@@ -259,6 +299,9 @@ watch(
     if (v) {
       results.value = []
       running.value = false
+      lastUndo.value = null
+      undoResults.value = []
+      undoing.value = false
       loadAllBranches()
     }
   }
@@ -279,6 +322,11 @@ const runLabel = computed(() => {
 
 const okCount = computed(() => results.value.filter((r) => r.ok).length)
 const failCount = computed(() => results.value.length - okCount.value)
+const undoOkCount = computed(() => undoResults.value.filter((r) => r.ok).length)
+const undoFailCount = computed(() => undoResults.value.length - undoOkCount.value)
+const actionLabel = computed(
+  () => ({ create: '创建', delete: '删除', rename: '重命名' })[lastUndo.value?.action] || ''
+)
 
 // 与 merge store 保持一致的 payload 序列化：去掉前端临时字段
 function serialize(p) {
@@ -316,14 +364,17 @@ async function run() {
       from_branch: from,
     })
   } else if (tab.value === 'delete') {
-    const bn = deleteName.value.trim()
-    if (!bn) {
+    const dnames = deleteNames.value
+      .map((n) => (n || '').trim())
+      .filter(Boolean)
+    if (!dnames.length) {
       ElMessage.warning('请填写要删除的分支名')
       return
     }
+    const nameList = dnames.map((n) => `「${n}」`).join('、')
     try {
       await ElMessageBox.confirm(
-        `将删除所选 ${list.length} 个工程上的远程分支「${bn}」，该操作不可恢复，确定继续？`,
+        `将删除所选 ${list.length} 个工程上的远程分支：${nameList}，该操作不可恢复，确定继续？`,
         '删除分支确认',
         {
           type: 'warning',
@@ -335,7 +386,7 @@ async function run() {
     } catch {
       return // 用户取消
     }
-    call = api.branchDelete({ projects: payloads, branch_name: bn })
+    call = api.branchDelete({ projects: payloads, branch_names: dnames })
   } else {
     const oldn = oldName.value.trim()
     const newn = newName.value.trim()
@@ -352,9 +403,11 @@ async function run() {
 
   running.value = true
   results.value = []
+  undoResults.value = []
   try {
     const r = await call
     results.value = r.results || []
+    lastUndo.value = r.undo_id ? { id: r.undo_id, action: r.action } : null
     const fail = failCount.value
     if (fail === 0) ElMessage.success(`全部完成：${okCount.value} 个工程成功`)
     else if (okCount.value > 0) ElMessage.warning(`部分成功：成功 ${okCount.value}，失败 ${fail}`)
@@ -367,6 +420,44 @@ async function run() {
     ElMessage.error('执行失败：' + e.message)
   } finally {
     running.value = false
+  }
+}
+
+// 撤回最近一次创建/删除/重命名操作
+async function undoRun() {
+  if (undoing.value || !lastUndo.value) return
+  const u = lastUndo.value
+  try {
+    await ElMessageBox.confirm(
+      `撤回本次「${actionLabel.value}」操作，将自动执行逆向操作恢复分支，确定继续？`,
+      '撤回确认',
+      {
+        type: 'warning',
+        confirmButtonText: '确定撤回',
+        cancelButtonText: '取消',
+      }
+    )
+  } catch {
+    return // 用户取消
+  }
+  undoing.value = true
+  undoResults.value = []
+  try {
+    const r = await api.branchUndo({ undo_id: u.id })
+    undoResults.value = r.results || []
+    lastUndo.value = null
+    const ok = undoOkCount.value
+    const fail = undoFailCount.value
+    if (fail === 0) ElMessage.success(`撤回完成：${ok} 项成功`)
+    else if (ok > 0) ElMessage.warning(`撤回部分成功：成功 ${ok}，失败 ${fail}`)
+    else ElMessage.error('撤回全部失败，请检查各工程错误信息')
+    // 撤回后刷新分支缓存
+    loadAllBranches()
+    selectedProjects.value.forEach((p) => projects.loadBranchesFor(p.id))
+  } catch (e) {
+    ElMessage.error('撤回失败：' + e.message)
+  } finally {
+    undoing.value = false
   }
 }
 </script>
@@ -549,6 +640,22 @@ async function run() {
   color: var(--text);
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
+}
+.bm-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 8px;
+  background: rgba(230, 162, 60, 0.06);
+}
+.bm-undo-note {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 220px;
 }
 .bm-ok {
   font-size: 12px;
