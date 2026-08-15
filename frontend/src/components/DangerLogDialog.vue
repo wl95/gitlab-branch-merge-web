@@ -55,6 +55,10 @@
               <strong>{{ line.value }}</strong>
             </div>
           </div>
+          <div v-if="gitAddresses(item).length" class="dl-git-lines">
+            <span>Git 地址</span>
+            <strong v-for="addr in gitAddresses(item)" :key="addr">{{ addr }}</strong>
+          </div>
           <div class="dl-meta">
             <span>ID: {{ item.id }}</span>
             <span>撤回类型: {{ item.undo_type || '无' }}</span>
@@ -162,6 +166,10 @@ function requestOf(item) {
 
 function namesText(names) {
   return (names || []).filter(Boolean).join('、') || '-'
+}
+
+function gitAddresses(item) {
+  return (item.git_addresses || []).filter(Boolean)
 }
 
 function operationLines(item) {
@@ -340,6 +348,26 @@ async function undo(item) {
 .dl-op-line strong {
   color: var(--text);
   font-weight: 600;
+  word-break: break-all;
+}
+.dl-git-lines {
+  margin-top: 8px;
+  padding: 7px 8px;
+  border: 1px dashed rgba(88, 166, 255, 0.35);
+  border-radius: 6px;
+  background: rgba(88, 166, 255, 0.08);
+  font-size: 12px;
+}
+.dl-git-lines span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+.dl-git-lines strong {
+  display: block;
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 500;
   word-break: break-all;
 }
 .dl-meta {

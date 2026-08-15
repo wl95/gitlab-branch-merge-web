@@ -431,13 +431,67 @@ def load_audit_logs():
     try:
         with open(str(AUDIT_LOG_FILE), "r", encoding="utf-8") as f:
             data = json.load(f)
-        return data if isinstance(data, list) else []
+        if not isinstance(data, list):
+            return []
+        return [sanitize_audit_entry(x) for x in data if isinstance(x, dict)]
     except (OSError, ValueError):
         return []
 
 
+GIT_ADDRESS_KEYS = {"ssh_host", "git_url", "remote_url", "repo_url", "repository_url"}
+
+
+def redact_git_address(value):
+    """保留审计定位信息，去掉可能存在的用户名、密码或 token。"""
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    if "://" in s:
+        scheme, rest = s.split("://", 1)
+        if "@" in rest:
+            rest = "***@" + rest.rsplit("@", 1)[1]
+        return f"{scheme}://{rest}"
+    if "@" in s and ":" in s:
+        return "***@" + s.rsplit("@", 1)[1]
+    return s
+
+
+def sanitize_audit_payload(value, git_addresses=None):
+    git_addresses = git_addresses if git_addresses is not None else []
+    if isinstance(value, dict):
+        out = {}
+        for k, child in value.items():
+            if k in GIT_ADDRESS_KEYS:
+                addr = redact_git_address(child)
+                if addr and addr not in git_addresses:
+                    git_addresses.append(addr)
+                continue
+            out[k] = sanitize_audit_payload(child, git_addresses)
+        return out
+    if isinstance(value, list):
+        return [sanitize_audit_payload(child, git_addresses) for child in value]
+    return value
+
+
+def sanitize_audit_entry(entry):
+    raw_payload = entry.get("payload") if isinstance(entry.get("payload"), dict) else {}
+    git_addresses = []
+    safe_payload = sanitize_audit_payload(raw_payload, git_addresses)
+    for addr in entry.get("git_addresses") or []:
+        redacted = redact_git_address(addr)
+        if redacted and redacted not in git_addresses:
+            git_addresses.append(redacted)
+    safe = dict(entry)
+    safe["payload"] = safe_payload
+    safe["git_addresses"] = git_addresses
+    safe["commands"] = collect_commands({"payload": safe_payload, "commands": entry.get("commands") or []})
+    return safe
+
+
 def append_audit_log(action, title, detail="", undo_type="", payload=None):
     payload = payload or {}
+    git_addresses = []
+    safe_payload = sanitize_audit_payload(payload, git_addresses)
     logs = load_audit_logs()
     logs.insert(0, {
         "id": f"{int(time.time() * 1000)}-{len(logs)}",
@@ -446,8 +500,9 @@ def append_audit_log(action, title, detail="", undo_type="", payload=None):
         "title": title,
         "detail": detail,
         "undo_type": undo_type,
-        "payload": payload,
-        "commands": collect_commands(payload),
+        "git_addresses": git_addresses,
+        "payload": safe_payload,
+        "commands": collect_commands(safe_payload),
     })
     with open(str(AUDIT_LOG_FILE), "w", encoding="utf-8") as f:
         json.dump(logs[:300], f, ensure_ascii=False, indent=2)
