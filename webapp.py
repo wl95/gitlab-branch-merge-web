@@ -1121,7 +1121,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 items, total = gm.range_commits(local_dir, source, target, limit=limit)
                 self._send_json({"ok": True, "items": items, "total": total,
-                                 "source": source, "target": target})
+                                 "source": source, "target": target,
+                                 "limit": limit,
+                                 "truncated": total > len(items)})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"获取 commits 失败: {e}"}, code=400)
         elif parsed.path == "/api/commit/diff":

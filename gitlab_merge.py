@@ -823,8 +823,9 @@ def range_commits(local_dir, source, target, limit=500, remote="origin"):
     0. 先做一次轻量 `git fetch --prune`，把远端最新 refs 拉到本地，避免本地
        仓库因长时间未拉取而漏掉近期的 commit（这正是这次出现的"GitLab 显示
        154 个，本工具只展示 130 个"的根因）。
-    1. 再用 `git rev-list target..source` 拿到 source 上有而 target 上没有的
-       commit SHA（默认包含 merge commit），这是「真正会引入新内容」的 commits。
+    1. 使用 `git rev-list target..source` 按 GitLab 比较页的提交集合口径展示。
+       注意不要用 `git cherry` 做 patch-id 过滤，否则 GitLab 仍展示的等价提交
+       会被本工具误隐藏，出现 25 被算成 22 这类数量差异。
     2. 兜底：如果上面为空，说明 target 已经包含了 source 的所有内容；
        此时再用 `git rev-list --merges target..source` 单独拉 source 上独有
        的 merge commit（合并提交可能因内容已并入 target 而不计入差异，但
@@ -847,13 +848,21 @@ def range_commits(local_dir, source, target, limit=500, remote="origin"):
     if not s_sha or not t_sha:
         return [], 0
 
-    # 1. 默认查询：source 上有而 target 上没有的所有 commits
+    # 1. 默认查询：source 上有而 target 上没有的所有 commits（GitLab 口径）
+    count_proc = run_git(
+        ["rev-list", "--count", f"{t_sha}..{s_sha}"],
+        str(local_dir), check=False,
+    )
     shas_proc = run_git(
         ["rev-list", f"{t_sha}..{s_sha}", f"-n{limit}"],
         str(local_dir), check=False,
     )
-    if shas_proc.returncode != 0:
+    if count_proc.returncode != 0 or shas_proc.returncode != 0:
         return [], 0
+    try:
+        total = int((count_proc.stdout or "0").strip())
+    except (TypeError, ValueError):
+        total = 0
     shas = [s for s in (shas_proc.stdout or "").splitlines() if s.strip()]
 
     # 2. 兜底：默认为空时单独查 merge-only（合并提交可能被 rev-list 默认行为
@@ -894,7 +903,7 @@ def range_commits(local_dir, source, target, limit=500, remote="origin"):
             "subject": subject,
             "merge_only": merge_only,  # 标识这是兜底展示的合并提交
         })
-    return items, len(items)
+    return items, total or len(items)
 
 
 def commit_diff(local_dir, sha, max_lines=2000):

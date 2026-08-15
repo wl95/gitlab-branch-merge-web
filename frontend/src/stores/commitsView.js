@@ -16,6 +16,8 @@ export const useCommitsViewStore = defineStore('commitsView', {
     ctx: null,
     currentTarget: '',
     items: [],
+    total: 0,
+    truncated: false,
     loading: false,
     openDiff: {},
     diffCache: {},
@@ -39,6 +41,8 @@ export const useCommitsViewStore = defineStore('commitsView', {
       this.openDiff = {}
       this.diffCache = {}
       this.items = []
+      this.total = 0
+      this.truncated = false
       this.currentTarget = (p.target_branches && p.target_branches[0]) || ''
       this.visible = true
       if (this.currentTarget) {
@@ -50,6 +54,8 @@ export const useCommitsViewStore = defineStore('commitsView', {
       this.visible = false
       this.ctx = null
       this.items = []
+      this.total = 0
+      this.truncated = false
       this.currentTarget = ''
       this.openDiff = {}
       this.diffCache = {}
@@ -58,6 +64,8 @@ export const useCommitsViewStore = defineStore('commitsView', {
     async selectTarget(t) {
       this.currentTarget = t || ''
       this.items = []
+      this.total = 0
+      this.truncated = false
       this.openDiff = {}
       this.diffCache = {}
       if (this.currentTarget) await this._loadRange()
@@ -85,11 +93,17 @@ export const useCommitsViewStore = defineStore('commitsView', {
           target_branch: this.currentTarget,
         })
         this.items = r.items || []
+        this.total = r.total || this.items.length
+        this.truncated = !!r.truncated
         if (!this.items.length) {
           ElMessage.info('该目标分支暂无即将合并的新 commit')
+        } else if (this.truncated) {
+          ElMessage.warning(`待合并 commit 超过 ${this.items.length} 条，已截断展示，请确认目标分支是否选择正确`)
         }
       } catch (e) {
         this.items = []
+        this.total = 0
+        this.truncated = false
         ElMessage.error('获取 commit 列表失败：' + e.message)
       } finally {
         this.loading = false

@@ -643,7 +643,7 @@ body {
   top: 52px;
   right: 0;
   bottom: 0;
-  width: 340px;
+  width: 560px;
   z-index: 800;
   background: var(--panel);
   border-left: 1px solid var(--border);
@@ -693,6 +693,21 @@ body {
   display: none;
 }
 
+.exec-panel.collapsed .queue-open-btn {
+  display: none;
+}
+
+.exec-panel.collapsed .exec-head > .el-button:last-child {
+  display: inline-flex;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin: 0;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+}
+
 .exec-head .grow {
   flex: 1;
 }
@@ -704,6 +719,25 @@ body {
   font-size: 12px;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.queue-open-btn {
+  flex: none;
+}
+
+.queue-open-btn .el-icon {
+  margin-right: 3px;
+}
+
+.queue-open-count {
+  min-width: 16px;
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.16);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
 }
 
 .status-dot {
@@ -736,10 +770,44 @@ body {
   display: none;
 }
 
+.exec-summary {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel2);
+}
+
+.exec-summary > div {
+  min-width: 0;
+}
+
+.exec-summary strong,
+.exec-summary span {
+  display: block;
+}
+
+.exec-summary strong {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.exec-summary span {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 /* 待合并队列 */
 .merge-queue-wrap {
   flex: none;
-  max-height: 200px;
+  max-height: 340px;
   overflow-y: auto;
   border-bottom: 1px solid var(--border);
   padding: 10px 12px;
@@ -784,6 +852,12 @@ body {
   border-color: rgba(227, 179, 65, 0.5);
 }
 
+.qitem.empty {
+  opacity: 0.55;
+  border-color: var(--border);
+  background: rgba(139, 148, 158, 0.08);
+}
+
 .qhead {
   display: flex;
   align-items: center;
@@ -801,6 +875,30 @@ body {
 }
 .qhead .qname {
   margin-bottom: 0;
+}
+
+.qcommit {
+  margin-left: auto;
+  flex: none;
+  padding: 1px 6px;
+  border: 1px solid rgba(63, 185, 80, 0.35);
+  border-radius: 10px;
+  color: var(--green);
+  background: rgba(63, 185, 80, 0.12);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.qcommit.zero {
+  border-color: var(--border);
+  color: var(--muted);
+  background: rgba(139, 148, 158, 0.12);
+}
+
+.qcommit.loading {
+  border-color: rgba(88, 166, 255, 0.35);
+  color: var(--blue);
+  background: rgba(88, 166, 255, 0.12);
 }
 
 .qflow {
@@ -824,11 +922,34 @@ body {
 }
 
 .qtarget {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   background: rgba(252, 109, 38, 0.12);
   border: 1px solid rgba(252, 109, 38, 0.4);
   color: var(--accent2);
   padding: 0 6px;
   border-radius: 4px;
+  white-space: nowrap;
+}
+
+.qtarget small {
+  color: inherit;
+  font-size: 10px;
+  opacity: 0.8;
+}
+
+.qtarget.empty {
+  border-color: var(--border);
+  color: var(--muted);
+  background: rgba(139, 148, 158, 0.1);
+  text-decoration: line-through;
+}
+
+.qtarget.checking {
+  border-color: rgba(88, 166, 255, 0.35);
+  color: var(--blue);
+  background: rgba(88, 166, 255, 0.08);
 }
 
 .qwarn {
@@ -842,6 +963,76 @@ body {
   font-size: 12px;
   text-align: center;
   padding: 12px 0;
+}
+
+.merge-queue-drawer .el-drawer__body {
+  display: flex;
+  min-height: 0;
+  padding: 0;
+}
+
+.merge-queue-drawer-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.drawer-queue-head {
+  flex: none;
+  margin: 0;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.drawer-queue-head > div {
+  min-width: 0;
+}
+
+.drawer-queue-head .queue-title {
+  display: block;
+  color: var(--text);
+  font-size: 15px;
+}
+
+.queue-subtitle {
+  display: block;
+  margin-top: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.merge-queue-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 20px;
+}
+
+.merge-queue-list .qitem {
+  padding: 12px;
+  margin-bottom: 10px;
+}
+
+.merge-queue-drawer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--panel2);
+}
+
+.drawer-foot-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 日志 */

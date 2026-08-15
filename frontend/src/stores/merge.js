@@ -5,6 +5,14 @@ import { useProjectsStore } from './projects'
 
 const COLLAPSE_KEY = 'execCollapsed'
 
+function commitCountSignature(project) {
+  return [
+    project.local_dir || '',
+    project.source_branch || '',
+    (project.target_branches || []).join(','),
+  ].join('|')
+}
+
 export const useMergeStore = defineStore('merge', {
   state: () => ({
     busy: false,
@@ -13,6 +21,7 @@ export const useMergeStore = defineStore('merge', {
     collapsed: false,
     timer: null,
     undo: null, // { has_undo, merged_at, items } 最近一次合并的撤回快照
+    commitCounts: {}, // projectId -> { loading, total, targets, error }
   }),
 
   actions: {
@@ -42,13 +51,35 @@ export const useMergeStore = defineStore('merge', {
     async runMerge() {
       if (this.busy) return
       const projectsStore = useProjectsStore()
-      const selected = projectsStore.checkedProjects
+      const checking = projectsStore.checkedProjects.some((p) => this.commitCounts[p.id]?.loading)
+      if (checking) {
+        ElMessage.warning('正在检测待合并 commit 数量，请稍后再开始合并')
+        return
+      }
+      const configured = projectsStore.checkedProjects.filter((p) =>
+        p.ssh_host && p.source_branch && p.target_branches && p.target_branches.length
+      )
+      const unchecked = configured.find((p) => {
+        const stat = this.commitCounts[p.id]
+        return !stat || stat.loading || stat.error
+      })
+      if (unchecked) {
+        ElMessage.warning(`工程「${unchecked.name || unchecked.ssh_host}」的 commit 数量尚未检测成功`)
+        return
+      }
+      const selected = configured
+        .map((p) => {
+          const stat = this.commitCounts[p.id]
+          const targets = (p.target_branches || []).filter((t) => (stat.targets[t] || 0) > 0)
+          return { project: p, targets }
+        })
+        .filter((x) => x.targets.length)
       if (!selected.length) {
-        ElMessage.error('请至少勾选一个要执行的工程')
+        ElMessage.error('没有可执行的工程：已勾选工程均无合并内容或未勾选工程')
         return
       }
       for (let i = 0; i < selected.length; i++) {
-        const s = selected[i]
+        const s = selected[i].project
         if (!s.ssh_host || !s.source_branch || !s.target_branches.length) {
           ElMessage.error(`第 ${i + 1} 个工程配置不完整（需要 SSH 地址、源分支、目标分支）`)
           return
@@ -63,12 +94,59 @@ export const useMergeStore = defineStore('merge', {
       this.resetLogs()
       // 新合并开始，旧撤回快照作废
       this.undo = null
-      const payload = selected.map(({ id, checked, branches, ...rest }) => rest)
+      const payload = selected.map(({ project, targets }) => {
+        const { id, checked, branches, ...rest } = project
+        return { ...rest, target_branches: targets }
+      })
       try {
         const r = await api.merge(payload)
         if (r && r.status === 'started') this.startPolling()
       } catch (e) {
         ElMessage.error('启动合并失败：' + e.message)
+      }
+    },
+
+    async refreshCommitCount(project) {
+      if (!project || !project.id) return
+      const signature = commitCountSignature(project)
+      const current = this.commitCounts[project.id]
+      if (current && current.signature === signature && (current.loading || !current.error)) return
+      if (!project.local_dir || !project.source_branch || !project.target_branches || !project.target_branches.length) {
+        this.commitCounts = {
+          ...this.commitCounts,
+          [project.id]: { loading: false, total: null, targets: {}, error: '配置不完整', signature },
+        }
+        return
+      }
+      this.commitCounts = {
+        ...this.commitCounts,
+        [project.id]: { loading: true, total: null, targets: {}, error: '', signature },
+      }
+      try {
+        const results = await Promise.all(project.target_branches.map(async (target) => {
+          const r = await api.mergeRange({
+            local_dir: project.local_dir,
+            source_branch: project.source_branch,
+            target_branch: target,
+            limit: 1,
+          })
+          return [target, r.total || 0]
+        }))
+        const latest = this.commitCounts[project.id]
+        if (!latest || latest.signature !== signature) return
+        const targets = Object.fromEntries(results)
+        const total = results.reduce((sum, [, n]) => sum + n, 0)
+        this.commitCounts = {
+          ...this.commitCounts,
+          [project.id]: { loading: false, total, targets, error: '', signature },
+        }
+      } catch (e) {
+        const latest = this.commitCounts[project.id]
+        if (!latest || latest.signature !== signature) return
+        this.commitCounts = {
+          ...this.commitCounts,
+          [project.id]: { loading: false, total: null, targets: {}, error: e.message, signature },
+        }
       }
     },
 
