@@ -182,7 +182,7 @@ export const useMergeStore = defineStore('merge', {
         [project.id]: { loading: true, total: null, targets: {}, error: '', signature },
       }
       try {
-        await this.startCommandLogSession()
+        await this.startCommandLogSession({ reveal: false })
         const results = await Promise.all(project.target_branches.map(async (target) => {
           const r = await api.mergeRange({
             local_dir: project.local_dir,

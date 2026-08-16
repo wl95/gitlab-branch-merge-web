@@ -1,9 +1,29 @@
 // 后端 API 封装：统一处理 JSON 解析与错误抛出
 
+function apiCandidates(path) {
+  const urls = [`/api${path}`, `http://127.0.0.1:8765/api${path}`]
+  if (typeof window !== 'undefined' && window.location.origin) {
+    urls.splice(1, 0, `${window.location.origin}/api${path}`)
+  }
+  return [...new Set(urls)]
+}
+
 async function request(path, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } }
   if (body !== null) opts.body = JSON.stringify(body)
-  const res = await fetch('/api' + path, opts)
+  let res = null
+  const errors = []
+  for (const url of apiCandidates(path)) {
+    try {
+      res = await fetch(url, opts)
+      break
+    } catch (e) {
+      errors.push(url)
+    }
+  }
+  if (!res) {
+    throw new Error(`无法连接后端服务，已尝试：${errors.join('、')}。请确认 ./start_webapp.sh 正在运行，且浏览器访问 http://127.0.0.1:8765/`)
+  }
   let data = null
   try {
     data = await res.json()
@@ -19,6 +39,26 @@ async function request(path, method = 'GET', body = null) {
   return data
 }
 
+async function diagnoseBackend() {
+  const checks = []
+  for (const path of ['/state', '/commit/report/ping']) {
+    for (const url of apiCandidates(path)) {
+      try {
+        const res = await fetch(url, { method: 'GET' })
+        checks.push({ url, ok: res.ok, status: res.status })
+        if (res.ok) break
+      } catch (e) {
+        checks.push({ url, ok: false, error: e.message || '连接失败' })
+      }
+    }
+  }
+  const stateOk = checks.some((x) => x.url.includes('/api/state') && x.ok)
+  const reportOk = checks.some((x) => x.url.includes('/api/commit/report/ping') && x.ok)
+  if (!stateOk) return `后端未响应。诊断：${checks.map((x) => `${x.url} ${x.status || x.error}`).join('；')}`
+  if (!reportOk) return `后端正在运行，但不是最新版本或缺少提交统计接口。请停止旧服务后重新执行 ./start_webapp.sh。诊断：${checks.map((x) => `${x.url} ${x.status || x.error}`).join('；')}`
+  return ''
+}
+
 export const api = {
   state: () => request('/state'),
   branches: (payload) => request('/branches', 'POST', payload),
@@ -28,6 +68,8 @@ export const api = {
   projectPull: (payload) => request('/project/pull', 'POST', payload),
   save: (projects, global) => request('/save', 'POST', { projects, global }),
   commits: (payload) => request('/commits', 'POST', payload),
+  commitReport: (payload) => request('/commit/report', 'POST', payload),
+  diagnoseBackend,
   cherryPick: (payload) => request('/cherry-pick', 'POST', payload),
   mergeRange: (payload) => request('/merge/range', 'POST', payload),
   commitDiff: (payload) => request('/commit/diff', 'POST', payload),

@@ -395,6 +395,136 @@ body {
   margin-left: 0;
 }
 
+.commit-report-dialog .el-dialog__body {
+  padding-top: 8px;
+}
+
+.report-toolbar {
+  display: grid;
+  grid-template-columns: 320px minmax(220px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.report-author-select {
+  width: 100%;
+}
+
+.report-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.report-error-text {
+  color: var(--red);
+}
+
+.report-empty,
+.report-muted {
+  color: var(--muted);
+  padding: 18px 0;
+  text-align: center;
+}
+
+.report-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.report-project {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.report-project-head {
+  min-height: 38px;
+  padding: 9px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.report-project-head strong {
+  min-width: 0;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-project-head span,
+.report-project-head em {
+  flex: none;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: normal;
+}
+
+.report-project-head em {
+  margin-left: auto;
+}
+
+.report-error {
+  padding: 12px;
+  color: var(--red);
+  font-size: 12px;
+}
+
+.report-commits {
+  display: flex;
+  flex-direction: column;
+}
+
+.report-commit {
+  min-height: 34px;
+  padding: 7px 12px;
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr) 120px;
+  gap: 10px;
+  align-items: center;
+  border-top: 1px solid rgba(48, 54, 61, 0.55);
+  font-size: 12.5px;
+}
+
+.report-commit:first-child {
+  border-top: 0;
+}
+
+.report-commit code {
+  color: var(--blue);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.report-subject,
+.report-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.report-author {
+  color: var(--muted);
+  text-align: right;
+}
+
+.report-markdown textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+
 .section-title .count {
   background: #21262d;
   border: 1px solid var(--border);
@@ -2385,6 +2515,13 @@ body {
   }
   .exec-panel {
     max-height: 560px;
+  }
+  .report-toolbar,
+  .report-commit {
+    grid-template-columns: 1fr;
+  }
+  .report-author {
+    text-align: left;
   }
 }
 

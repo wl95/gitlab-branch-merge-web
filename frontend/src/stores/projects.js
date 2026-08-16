@@ -176,6 +176,17 @@ export const useProjectsStore = defineStore('projects', {
       if (p) p.branches = Array.isArray(branches) ? branches : []
     },
 
+    applyDefaultBranches(p, currentBranch = '') {
+      if (!p) return
+      if (!p.source_branch) {
+        const source = (this.global.source_branch || currentBranch || '').trim()
+        if (source) p.source_branch = source
+      }
+      if ((!p.target_branches || !p.target_branches.length) && this.global.target_branches.length) {
+        p.target_branches = [...this.global.target_branches]
+      }
+    },
+
     // 加载单个工程的分支（用于加入/修改 ssh_host 后自动触发）。
     // 静默调用：失败不弹错（避免用户输入过程中频繁弹错误），由卡片显示加载态。
     async loadBranchesFor(id) {
@@ -186,9 +197,10 @@ export const useProjectsStore = defineStore('projects', {
       if (p.branchesLoading) return // 已在加载中，跳过避免重复请求
       p.branchesLoading = true
       try {
-        const branches = await this.loadBranches({
+        const data = await this.loadBranchesWithCurrent({
           ssh_host: p.ssh_host,
           project_path: p.project_path,
+          local_dir: p.local_dir,
           gitlab_project_id: p.gitlab_project_id,
           gitlab_token: p.gitlab_token,
           gitlab_url: p.gitlab_url,
@@ -196,8 +208,9 @@ export const useProjectsStore = defineStore('projects', {
           gitlab_token_in_query: p.gitlab_token_in_query,
           global: { ...this.global },
         })
-        this.setBranches(id, branches)
-        return branches
+        this.setBranches(id, data.branches)
+        this.applyDefaultBranches(p, data.currentBranch)
+        return data.branches
       } catch (e) {
         console.error(`自动加载分支失败（${p.ssh_host}）：`, e)
         if (p.gitlab_project_id) ElMessage.warning(`工程「${p.name || p.project_path || p.ssh_host}」分支加载失败：${e.message}`)
@@ -244,12 +257,14 @@ export const useProjectsStore = defineStore('projects', {
         .map(async (p) => {
           p.branchesLoading = true
           try {
-            const branches = await this.loadBranches({
+            const data = await this.loadBranchesWithCurrent({
               ssh_host: p.ssh_host,
               project_path: p.project_path,
+              local_dir: p.local_dir,
               global: { ...this.global },
             })
-            this.setBranches(p.id, branches)
+            this.setBranches(p.id, data.branches)
+            this.applyDefaultBranches(p, data.currentBranch)
           } catch (e) {
             console.error(`自动加载分支失败（${p.ssh_host}）：`, e)
           } finally {
@@ -419,6 +434,7 @@ export const useProjectsStore = defineStore('projects', {
       })
       if (p && Array.isArray(repo.branches) && repo.branches.length) {
         p.branches = [...repo.branches]
+        this.applyDefaultBranches(p)
       } else if (p) {
         this.loadBranchesFor(p.id).then((branches) => {
           if (branches?.length) {
@@ -458,6 +474,8 @@ export const useProjectsStore = defineStore('projects', {
         project_path: repo.project_path || '',
         local_dir: repo.path || '',
       })
+      p.addedFromScan = true
+      this.applyDefaultBranches(p)
       ElMessage.success(`已加入工程「${repo.name || repo.ssh_host || repo.path}」`)
       // 扫描加入的仓库自带 ssh_host，立即自动加载分支
       if (p && p.ssh_host) this.loadBranchesFor(p.id)
@@ -469,7 +487,7 @@ export const useProjectsStore = defineStore('projects', {
         (!repo.ssh_host && repo.path && x.local_dir === repo.path)
       )
       if (!p) return
-      if (p.source_branch || p.target_branches.length) {
+      if (!p.addedFromScan && (p.source_branch || p.target_branches.length)) {
         ElMessage.warning('该工程已配置分支，请在卡片中手动删除')
         return
       }
@@ -570,6 +588,7 @@ export const useProjectsStore = defineStore('projects', {
         checked,
         branches,
         branchesLoading,
+        addedFromScan,
         gitlab_project_id,
         gitlab_token,
         gitlab_url,

@@ -63,6 +63,105 @@ gm.UNDO_FILE = str(UNDO_FILE)
 STATE = {"busy": False, "lock": threading.Lock()}
 
 
+def _commit_report(projects, start_date, end_date, authors=None):
+    author_filter = set(a for a in (authors or []) if a)
+    date_title = start_date if start_date == end_date else f"{start_date} 至 {end_date}"
+    project_items = []
+    all_authors = set()
+    total = 0
+
+    for conf in projects:
+        name = conf.get("name") or conf.get("project_path") or conf.get("ssh_host") or "未命名工程"
+        branch = (conf.get("source_branch") or "").strip()
+        local_dir = (conf.get("local_dir") or "").strip()
+        if not branch and local_dir and gm.is_git_repo(local_dir):
+            proc = gm.run_git(["branch", "--show-current"], local_dir, check=False)
+            branch = (proc.stdout or "").strip()
+        if not branch:
+            project_items.append({
+                "name": name,
+                "branch": "",
+                "commits": [],
+                "authors": [],
+                "count": 0,
+                "error": "缺少源分支",
+            })
+            continue
+        try:
+            commits = gm.list_commits_by_period(conf, branch, start_date, end_date)
+            for c in commits:
+                if c.get("author"):
+                    all_authors.add(c["author"])
+            if author_filter:
+                commits = [c for c in commits if c.get("author") in author_filter]
+            project_authors = sorted({c.get("author") for c in commits if c.get("author")})
+            total += len(commits)
+            project_items.append({
+                "name": name,
+                "branch": branch,
+                "commits": commits,
+                "authors": project_authors,
+                "count": len(commits),
+            })
+        except Exception as e:
+            project_items.append({
+                "name": name,
+                "branch": branch,
+                "commits": [],
+                "authors": [],
+                "count": 0,
+                "error": str(e),
+            })
+
+    lines = [f"# {date_title} 提交统计", "", "## 汇总",
+             f"- 工程数：{len(project_items)}", f"- Commit 数：{total}"]
+    if author_filter:
+        lines.append(f"- 提交人：{', '.join(sorted(author_filter))}")
+    lines.append("")
+
+    by_author = {}
+    for item in project_items:
+        for c in item.get("commits") or []:
+            by_author.setdefault(c.get("author") or "未知提交人", []).append({
+                **c,
+                "project": item["name"],
+            })
+    if by_author:
+        lines.append("## 按提交人")
+        for author in sorted(by_author):
+            lines.append(f"- {author}（{len(by_author[author])}）")
+            for c in by_author[author]:
+                lines.append(f"  - [{c['project']}] {c['subject']}（{c['short']}）")
+        lines.append("")
+
+    lines.append("## 按工程")
+    for item in project_items:
+        title = f"### {item['name']}"
+        if item.get("branch"):
+            title += f"（{item['branch']}）"
+        lines.append(title)
+        if item.get("error"):
+            lines.append(f"- 统计失败：{item['error']}")
+        elif not item["commits"]:
+            lines.append("- 无提交")
+        else:
+            grouped = {}
+            for c in item["commits"]:
+                grouped.setdefault(c.get("author") or "未知提交人", []).append(c)
+            for author in sorted(grouped):
+                lines.append(f"- {author}（{len(grouped[author])}）")
+                for c in grouped[author]:
+                    lines.append(f"  - {c['short']} {c['subject']}")
+        lines.append("")
+
+    return {
+        "projects": project_items,
+        "authors": sorted(all_authors),
+        "total": total,
+        "markdown": "\n".join(lines).strip() + "\n",
+    }
+
+
 # ---------------------------------------------------------------- 分支查询
 
 def _gitlab_base_url(raw_url):
@@ -789,6 +888,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"busy": STATE["busy"],
                              "projects": load_projects(),
                              "global": load_global()})
+        elif path == "/api/commit/report/ping":
+            self._send_json({"ok": True, "feature": "commit-report"})
         elif path == "/api/logs":
             q = parse_qs(parsed.query)
             since = int(q.get("since", ["0"])[0] or 0)
@@ -1322,6 +1423,30 @@ class Handler(BaseHTTPRequestHandler):
                                  "has_more": has_more})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"获取 commit 失败: {e}"}, code=400)
+        elif parsed.path == "/api/commit/report":
+            report_date = (body.get("date") or "").strip()
+            start_date = (body.get("start_date") or report_date).strip()
+            end_date = (body.get("end_date") or report_date).strip()
+            if (not re.match(r"^\d{4}-\d{2}-\d{2}$", start_date) or
+                    not re.match(r"^\d{4}-\d{2}-\d{2}$", end_date)):
+                self._send_json({"ok": False, "error": "请选择统计期间"}, code=400)
+                return
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+            authors = body.get("authors") or []
+            if isinstance(authors, str):
+                authors = [a.strip() for a in authors.split(",") if a.strip()]
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
+            if not projects:
+                self._send_json({"ok": False, "error": "请选择至少一个工程"}, code=400)
+                return
+            try:
+                data = _commit_report(projects, start_date, end_date, authors)
+                self._send_json({"ok": True, "date": start_date,
+                                 "start_date": start_date,
+                                 "end_date": end_date, **data})
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"生成统计失败: {e}"}, code=400)
         elif parsed.path == "/api/merge/range":
             # 返回 source..target 之间的 commits（本次将合并进 target 的）
             local_dir = (body.get("local_dir") or "").strip()

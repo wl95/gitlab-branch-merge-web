@@ -220,9 +220,10 @@ async function loadBranches() {
   }
   branchLoading.value = true
   try {
-    const branches = await merge.runWithCommandLog(() => store.loadBranches({
+    const data = await merge.runWithCommandLog(() => store.loadBranchesWithCurrent({
       ssh_host: p.ssh_host,
       project_path: p.project_path,
+      local_dir: p.local_dir,
       gitlab_project_id: p.gitlab_project_id,
       gitlab_token: p.gitlab_token,
       gitlab_url: p.gitlab_url,
@@ -230,7 +231,9 @@ async function loadBranches() {
       gitlab_token_in_query: p.gitlab_token_in_query,
       global: { ...store.global },
     }))
+    const branches = data.branches || []
     store.setBranches(p.id, branches)
+    store.applyDefaultBranches(p, data.currentBranch)
     if (!branches.length) ElMessage.warning('未发现可用的分支')
     else ElMessage.success(`已加载 ${branches.length} 个分支`)
   } catch (e) {
@@ -289,7 +292,10 @@ async function ensureLocalRepo(options = {}) {
     global: { ...store.global },
   }), { reveal: revealCommandLog })
   p.local_dir = r.local_dir || dir
-  if (r.branches && r.branches.length) store.setBranches(p.id, r.branches)
+  if (r.branches && r.branches.length) {
+    store.setBranches(p.id, r.branches)
+    store.applyDefaultBranches(p)
+  }
   return true
 }
 

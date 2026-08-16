@@ -1058,6 +1058,54 @@ def list_commits(conf, branch, count=50, offset=0):
     return commits
 
 
+def list_commits_by_period(conf, branch, start_date, end_date):
+    """列出远程分支在指定日期范围内的 commit，返回 [{sha, short, author, date, subject}]。"""
+    local_dir = (conf.get("local_dir") or "").strip()
+    if local_dir and Path(local_dir).exists() and is_git_repo(local_dir):
+        local_dir = str(Path(local_dir).expanduser().resolve())
+    else:
+        local_dir = ensure_repo(conf, check_branches=False)
+
+    remote = conf.get("remote") or "origin"
+    candidates = [f"{remote}/{branch}", branch]
+    ref = ""
+    for item in candidates:
+        proc = run_git(["rev-parse", "--verify", "--quiet", item],
+                       str(local_dir), check=False)
+        if proc.returncode == 0 and proc.stdout.strip():
+            ref = item
+            break
+    if not ref:
+        raise SystemExit(f"分支 {branch} 不存在，请先加载或选择正确源分支")
+
+    proc = run_git(
+        ["log", ref,
+         "--since", f"{start_date} 00:00:00",
+         "--until", f"{end_date} 23:59:59",
+         "--pretty=format:%H\t%an\t%ad\t%s", "--date=short"],
+        str(local_dir), check=False,
+    )
+    if proc.returncode != 0:
+        raise SystemExit(proc.stdout.strip() or f"git log 失败（分支 {branch} 不存在?）")
+    commits = []
+    for line in proc.stdout.splitlines():
+        parts = line.split("\t", 3)
+        if len(parts) == 4:
+            commits.append({
+                "sha": parts[0],
+                "short": parts[0][:8],
+                "author": parts[1],
+                "date": parts[2],
+                "subject": parts[3],
+            })
+    return commits
+
+
+def list_commits_by_date(conf, branch, date):
+    """列出远程分支在指定日期的 commit，返回 [{sha, short, author, date, subject}]。"""
+    return list_commits_by_period(conf, branch, date, date)
+
+
 def count_commits(conf, branch):
     """返回远程分支的 commit 总数（分支不存在或为空时返回 0）。"""
     local_dir = ensure_repo(conf, check_branches=False)
