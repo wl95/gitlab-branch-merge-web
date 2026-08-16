@@ -43,10 +43,6 @@ function addProject() {
 }
 
 async function saveAll() {
-  if (!projects.count) {
-    ElMessage.warning('暂无可保存的工程')
-    return
-  }
   saving.value = true
   try {
     await projects.save()

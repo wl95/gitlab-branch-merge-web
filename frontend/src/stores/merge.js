@@ -20,6 +20,9 @@ export const useMergeStore = defineStore('merge', {
     lastLogId: 0,
     collapsed: false,
     timer: null,
+    commandLogTimer: null,
+    commandStreaming: false,
+    commandSessionDepth: 0,
     undo: null, // { has_undo, merged_at, items } 最近一次合并的撤回快照
     commitCounts: {}, // projectId -> { loading, total, targets, error }
   }),
@@ -46,6 +49,62 @@ export const useMergeStore = defineStore('merge', {
         else if (text.includes('[WARNING]')) cls = 'warn'
         this.logs.push({ id, text, cls })
       })
+    },
+
+    async fetchCommandLogs() {
+      const lr = await api.logs(this.lastLogId)
+      if (lr.logs && lr.logs.length) {
+        this.appendLogs(lr.logs)
+        this.lastLogId = lr.since || this.lastLogId
+      }
+    },
+
+    async startCommandLogSession({ clear = false, reveal = true } = {}) {
+      this.commandSessionDepth += 1
+      if (this.commandSessionDepth > 1) return
+      if (reveal) this.collapsed = false
+      this.commandStreaming = true
+      clearInterval(this.commandLogTimer)
+      if (clear) {
+        try {
+          await api.clear()
+        } catch {
+          /* ignore */
+        }
+        this.resetLogs()
+      } else {
+        try {
+          const r = await api.logs(0)
+          this.lastLogId = r.since || this.lastLogId
+        } catch {
+          /* ignore */
+        }
+      }
+      this.commandLogTimer = setInterval(() => {
+        this.fetchCommandLogs().catch((e) => console.error('命令日志轮询失败', e))
+      }, 300)
+    },
+
+    async stopCommandLogSession() {
+      this.commandSessionDepth = Math.max(0, this.commandSessionDepth - 1)
+      if (this.commandSessionDepth > 0) return
+      clearInterval(this.commandLogTimer)
+      this.commandLogTimer = null
+      try {
+        await this.fetchCommandLogs()
+      } catch {
+        /* ignore */
+      }
+      this.commandStreaming = false
+    },
+
+    async runWithCommandLog(action, options = {}) {
+      await this.startCommandLogSession(options)
+      try {
+        return await action()
+      } finally {
+        await this.stopCommandLogSession()
+      }
     },
 
     async runMerge() {
@@ -99,7 +158,7 @@ export const useMergeStore = defineStore('merge', {
         return { ...rest, target_branches: targets }
       })
       try {
-        const r = await api.merge(payload)
+        const r = await api.merge(payload, { ...projectsStore.global })
         if (r && r.status === 'started') this.startPolling()
       } catch (e) {
         ElMessage.error('启动合并失败：' + e.message)
@@ -123,6 +182,7 @@ export const useMergeStore = defineStore('merge', {
         [project.id]: { loading: true, total: null, targets: {}, error: '', signature },
       }
       try {
+        await this.startCommandLogSession()
         const results = await Promise.all(project.target_branches.map(async (target) => {
           const r = await api.mergeRange({
             local_dir: project.local_dir,
@@ -147,6 +207,8 @@ export const useMergeStore = defineStore('merge', {
           ...this.commitCounts,
           [project.id]: { loading: false, total: null, targets: {}, error: e.message, signature },
         }
+      } finally {
+        await this.stopCommandLogSession()
       }
     },
 
@@ -176,6 +238,10 @@ export const useMergeStore = defineStore('merge', {
 
     startPolling() {
       this.busy = true
+      this.commandStreaming = false
+      this.commandSessionDepth = 0
+      clearInterval(this.commandLogTimer)
+      this.commandLogTimer = null
       clearInterval(this.timer)
       this.timer = setInterval(async () => {
         try {

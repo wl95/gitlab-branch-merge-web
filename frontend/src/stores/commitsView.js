@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import { useMergeStore } from './merge'
 
 // 待合并 commit 视图全局状态：
 //  - visible：弹窗是否显示
@@ -87,11 +88,12 @@ export const useCommitsViewStore = defineStore('commitsView', {
       }
       this.loading = true
       try {
-        const r = await api.mergeRange({
+        const merge = useMergeStore()
+        const r = await merge.runWithCommandLog(() => api.mergeRange({
           local_dir: c.local_dir,
           source_branch: c.source_branch,
           target_branch: this.currentTarget,
-        })
+        }), { reveal: false })
         this.items = r.items || []
         this.total = r.total || this.items.length
         this.truncated = !!r.truncated
@@ -119,10 +121,11 @@ export const useCommitsViewStore = defineStore('commitsView', {
       if (this.diffCache[sha]) return
       this.diffCache = { ...this.diffCache, [sha]: { state: 'loading' } }
       try {
-        const r = await api.commitDiff({
+        const merge = useMergeStore()
+        const r = await merge.runWithCommandLog(() => api.commitDiff({
           local_dir: this.ctx.local_dir,
           sha,
-        })
+        }), { reveal: false })
         this.diffCache = { ...this.diffCache, [sha]: { state: 'ok', data: r } }
       } catch (e) {
         this.diffCache = {

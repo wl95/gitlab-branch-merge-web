@@ -4,8 +4,8 @@
       <h2>⚡ 执行合并</h2>
       <div class="grow"></div>
       <div class="exec-status">
-        <span class="status-dot" :class="{ running: merge.busy }"></span>
-        <span>{{ merge.busy ? '任务运行中' : '空闲' }}</span>
+        <span class="status-dot" :class="{ running: merge.busy || merge.commandStreaming }"></span>
+        <span>{{ merge.busy ? '任务运行中' : merge.commandStreaming ? '命令执行中' : '空闲' }}</span>
       </div>
       <el-button text circle title="折叠 / 展开" @click="merge.toggleCollapsed">
         <el-icon :style="{ transform: merge.collapsed ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }">

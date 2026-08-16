@@ -1,5 +1,5 @@
 <template>
-  <section class="panel">
+  <section class="panel scan-panel">
     <div class="panel-head">
       <h2>🔍 扫描本地仓库</h2>
     </div>
@@ -39,7 +39,7 @@
         </el-button>
       </div>
       <div class="scan-hint">
-        扫描目录下所有 git 仓库（仅一层深度），点「加入」可将工程直接添加到下方列表。SSH 地址从仓库 remote 自动提取，若仓库未配置 remote 可稍后在卡片中手动填写。
+        扫描目录下所有 git 仓库（最多递归 6 层，自动跳过缓存和依赖目录），点「加入」可将工程直接添加到下方列表。SSH 地址从仓库 remote 自动提取，若仓库未配置 remote 可稍后在卡片中手动填写。
       </div>
 
       <div v-show="store.scanShow" class="scan-list">
@@ -49,39 +49,51 @@
         </div>
 
         <template v-else-if="store.scanResult">
-          <div v-if="store.scanResult.warnings && store.scanResult.warnings.length" class="scan-empty warn">
-            <div v-for="(w, i) in store.scanResult.warnings" :key="i">⚠ {{ w }}</div>
-          </div>
-
-          <div v-if="repos.length" class="scan-checkall">
-            <el-checkbox
-              :model-value="allAdded"
-              :indeterminate="someAdded"
-              @change="toggleAll"
-            >
-              全选
-            </el-checkbox>
-            <span>发现 {{ repos.length }} 个仓库</span>
-          </div>
-
-          <template v-if="!store.scanLoading && store.scanResult && !repos.length && !store.scanResult.warnings?.length">
-            <div class="scan-empty">该目录下没有找到 git 仓库</div>
-          </template>
-
-          <div
-            v-for="repo in repos"
-            :key="repo.ssh_host || repo.path"
-            class="scan-item"
-            @click="toggle(repo)"
-          >
-            <el-checkbox :model-value="added(repo)" @click.stop @change="() => toggle(repo)" />
-            <div style="flex: 1; min-width: 0">
-              <div class="scan-host">{{ repo.name || repo.ssh_host }}</div>
-              <div class="scan-path">{{ repo.path }}</div>
+          <div class="scan-list-fixed">
+            <div v-if="store.scanResult.warnings && store.scanResult.warnings.length" class="scan-empty warn">
+              <div v-for="(w, i) in store.scanResult.warnings" :key="i">⚠ {{ w }}</div>
             </div>
-            <el-button size="small" :type="added(repo) ? 'warning' : 'primary'" plain @click.stop="toggle(repo)">
-              {{ added(repo) ? '移除' : '加入' }}
-            </el-button>
+
+            <el-input
+              v-if="allRepos.length"
+              v-model="keyword"
+              class="scan-filter"
+              placeholder="按仓库名称、路径或 SSH 地址筛选"
+              clearable
+            />
+
+            <div v-if="repos.length" class="scan-checkall">
+              <el-checkbox
+                :model-value="allAdded"
+                :indeterminate="someAdded"
+                @change="toggleAll"
+              >
+                全选
+              </el-checkbox>
+              <span>{{ countText }}</span>
+            </div>
+
+            <template v-if="!repos.length && !store.scanResult.warnings?.length">
+              <div class="scan-empty">{{ allRepos.length ? '没有匹配的仓库' : '该目录下没有找到 git 仓库' }}</div>
+            </template>
+          </div>
+
+          <div class="scan-list-body">
+            <div
+              v-for="repo in repos"
+              :key="repo.ssh_host || repo.path"
+              class="scan-item"
+              @click="toggle(repo)"
+            >
+              <el-checkbox :model-value="added(repo)" @click.stop @change="() => toggle(repo)" />
+              <div style="flex: 1; min-width: 0">
+                <div class="scan-host">{{ repo.name || repo.ssh_host }}</div>
+                <div class="scan-path">{{ repo.path }}</div>
+              </div>
+              <el-button size="small" :type="added(repo) ? 'warning' : 'primary'" plain @click.stop="toggle(repo)">
+                {{ added(repo) ? '移除' : '加入' }}
+              </el-button>
+            </div>
           </div>
         </template>
       </div>
@@ -90,15 +102,33 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { Clock } from '@element-plus/icons-vue'
 import { useProjectsStore } from '../stores/projects'
 
 const store = useProjectsStore()
+const keyword = ref('')
 
-const repos = computed(() => (store.scanResult ? store.scanResult.repos : []))
+const allRepos = computed(() => (store.scanResult ? store.scanResult.repos : []))
+const repos = computed(() => {
+  const kw = keyword.value.trim().toLowerCase()
+  if (!kw) return allRepos.value
+  return allRepos.value.filter((repo) => {
+    const text = [
+      repo.name,
+      repo.path,
+      repo.project_path,
+      repo.ssh_host,
+    ].filter(Boolean).join(' ').toLowerCase()
+    return text.includes(kw)
+  })
+})
+const countText = computed(() => {
+  if (!keyword.value.trim()) return `发现 ${allRepos.value.length} 个仓库`
+  return `匹配 ${repos.value.length} / ${allRepos.value.length} 个仓库`
+})
 const allAdded = computed(() => repos.value.length > 0 && repos.value.every((r) => added(r)))
-const someAdded = computed(() => repos.value.some((r) => added(r)))
+const someAdded = computed(() => repos.value.some((r) => added(r)) && !allAdded.value)
 
 function added(repo) {
   return store.projects.some((p) => isSameProject(p, repo))

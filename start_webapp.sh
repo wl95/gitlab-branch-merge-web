@@ -19,6 +19,12 @@ fi
 echo "============================================"
 echo "  GitLab 分支合并管理台"
 echo "  访问地址: http://127.0.0.1:$PORT/"
+echo "  项目目录: $(pwd)"
+if [ -f "dist/index.html" ]; then
+    echo "  前端产物: dist/index.html"
+else
+    echo "  前端产物: 未找到 dist/index.html，将回退到根目录 index.html"
+fi
 echo "  按 Ctrl+C 停止服务"
 echo "============================================"
 

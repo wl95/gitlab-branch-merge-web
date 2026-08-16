@@ -100,14 +100,77 @@ body {
   top: 68px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  max-height: calc(100vh - 88px);
-  overflow-y: auto;
-  padding-right: 4px;
+  height: calc(100vh - 88px);
+  overflow: hidden;
 }
 
 .workspace-content {
   min-width: 0;
+}
+
+.sidebar-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  flex: none;
+}
+
+.sidebar-tab {
+  height: 36px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sidebar-tab:hover {
+  color: var(--text);
+  background: #1c2128;
+}
+
+.sidebar-tab.active {
+  color: #fff;
+  background: var(--accent);
+}
+
+.sidebar-tab .el-icon {
+  font-size: 15px;
+}
+
+.sidebar-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sidebar-panel > .panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-panel > .panel > .panel-head {
+  flex: none;
+}
+
+.sidebar-panel > .panel > .panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
 }
 
 /* ========== 顶部导航 ========== */
@@ -179,6 +242,14 @@ body {
 .panel-head h2 {
   font-size: 14px;
   font-weight: 600;
+}
+
+.gitlab-panel .panel-head {
+  justify-content: space-between;
+}
+
+.gitlab-panel .panel-head .el-button {
+  margin-left: auto;
 }
 
 .panel-head .head-count {
@@ -334,10 +405,176 @@ body {
   font-weight: 400;
 }
 
+.batch-ssh-form {
+  display: grid;
+  gap: 8px;
+}
+
+.batch-ssh-dialog {
+  max-width: calc(100vw - 32px);
+}
+
+.batch-ssh-dialog .el-dialog__body {
+  max-height: min(68vh, 680px);
+  overflow-y: auto;
+}
+
+.el-overlay {
+  z-index: 2500;
+}
+
+.el-popper {
+  z-index: 2700;
+}
+
+.batch-ssh-form label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.batch-ssh-tip {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.6;
+  margin-bottom: 4px;
+}
+
+.batch-ssh-presets {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 4px;
+  background: #161b22;
+}
+
+.batch-ssh-presets-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.batch-ssh-presets-head .el-button {
+  height: 24px;
+  padding: 0 4px;
+  margin-left: 0;
+  color: var(--accent2);
+}
+
+.batch-ssh-preset-list {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.batch-ssh-preset-item {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+
+.batch-ssh-preset-item:hover {
+  background: #1c2128;
+}
+
+.batch-ssh-preset-item .el-radio {
+  min-width: 0;
+  margin-right: 0;
+  flex: 1;
+}
+
+.batch-ssh-preset-item .el-radio__label {
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.batch-ssh-preset-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.batch-ssh-preset-host {
+  color: var(--muted);
+  font-size: 12px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  word-break: break-all;
+}
+
+.batch-ssh-preset-item .el-button {
+  flex: none;
+  height: 24px;
+  padding: 0 4px;
+  margin-left: 0;
+  color: var(--yellow);
+}
+
+.batch-preset-option {
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.25;
+}
+
+.batch-preset-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.batch-preset-meta {
+  max-width: 420px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.remote-var-option {
+  min-width: 0;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  line-height: 1.3;
+}
+
+.remote-var-name {
+  color: var(--text);
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.remote-var-preview {
+  max-width: 420px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* ========== 扫描面板 ========== */
 .scan-row {
   display: flex;
   gap: 8px;
+  flex: none;
 }
 
 .scan-row .el-input {
@@ -345,34 +582,63 @@ body {
 }
 
 .scan-hint {
+  flex: none;
   margin-top: 8px;
   font-size: 12px;
   color: var(--muted);
   line-height: 1.6;
 }
 
+.scan-panel .panel-body,
+.gitlab-panel .panel-body {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.sidebar-panel > .scan-panel > .panel-body,
+.sidebar-panel > .gitlab-panel > .panel-body {
+  overflow: hidden;
+}
+
 .scan-list {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
   margin-top: 10px;
   border-top: 1px dashed var(--border);
   padding-top: 10px;
-  /* 列表固定高度，超出滚动，避免 50+ 仓库时撑高整个面板 */
-  max-height: 360px;
+  overflow: hidden;
+}
+
+.scan-list-fixed {
+  flex: none;
+  padding-right: 6px;
+}
+
+.scan-list-body {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding-right: 6px;
 }
 
 /* 自定义滚动条样式（仅在扫描列表中生效） */
-.scan-list::-webkit-scrollbar {
+.scan-list-body::-webkit-scrollbar {
   width: 8px;
 }
-.scan-list::-webkit-scrollbar-track {
+.scan-list-body::-webkit-scrollbar-track {
   background: transparent;
 }
-.scan-list::-webkit-scrollbar-thumb {
+.scan-list-body::-webkit-scrollbar-thumb {
   background: #30363d;
   border-radius: 4px;
 }
-.scan-list::-webkit-scrollbar-thumb:hover {
+.scan-list-body::-webkit-scrollbar-thumb:hover {
   background: #484f58;
 }
 
@@ -407,6 +673,11 @@ body {
   border-radius: 4px;
 }
 
+.scan-item.selected {
+  background: #1c2128;
+  border-color: #30363d;
+}
+
 .scan-item:hover {
   background: #1c2128;
 }
@@ -438,7 +709,623 @@ body {
   margin-bottom: 6px;
 }
 
+.gitlab-fields {
+  display: grid;
+  gap: 8px;
+  flex: none;
+}
+
+.gitlab-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.gitlab-fields .el-segmented {
+  width: 100%;
+}
+
+.gitlab-actions .el-button {
+  margin-left: 0;
+  min-width: 76px;
+}
+
+.gitlab-action-buttons {
+  display: flex;
+  gap: 6px;
+  flex: none;
+}
+
+.gitlab-project-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.gitlab-clone-config {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #161b22;
+}
+
+.gitlab-clone-dialog .gitlab-clone-config {
+  margin: 0;
+  border: 0;
+  padding: 2px 0 0;
+  background: transparent;
+  gap: 14px;
+}
+
+.gitlab-clone-dialog.el-dialog {
+  border-radius: 8px;
+}
+
+.gitlab-clone-dialog .el-dialog__body {
+  padding-top: 10px;
+}
+
+.gitlab-clone-dialog-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.gitlab-clone-dialog-foot span {
+  margin-right: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gitlab-clone-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.gitlab-clone-title span {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.gitlab-clone-title em {
+  color: var(--accent2);
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 7px;
+  border: 1px solid rgba(255, 154, 92, 0.55);
+  border-radius: 999px;
+  background: rgba(255, 98, 33, 0.08);
+}
+
+.gitlab-clone-field {
+  display: grid;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.gitlab-clone-field label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.gitlab-preset-list {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  max-height: 132px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.gitlab-preset-chip {
+  display: grid;
+  grid-template-columns: minmax(130px, 0.7fr) minmax(0, 1.3fr);
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #0d1117;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.gitlab-preset-chip:hover,
+.gitlab-preset-chip.active {
+  border-color: rgba(255, 154, 92, 0.75);
+  background: rgba(255, 98, 33, 0.08);
+}
+
+.gitlab-preset-chip span {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitlab-preset-chip em {
+  color: var(--muted);
+  font-style: normal;
+  font-size: 11px;
+  line-height: 1.25;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gitlab-prefix-row {
+  display: grid;
+  grid-template-columns: 112px minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.gitlab-prefix-row .el-segmented {
+  width: 100%;
+}
+
+.gitlab-clone-preview {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+  padding: 8px 10px;
+  border: 1px solid #30363d;
+  border-radius: 5px;
+  background: #0d1117;
+}
+
+.scan-filter {
+  margin-bottom: 8px;
+}
+
+.gitlab-repo-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) 72px;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+}
+
+.gitlab-repo-item .el-checkbox,
+.gitlab-panel .scan-checkall .el-checkbox {
+  position: relative;
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 8px 0 0;
+  flex: none;
+}
+
+.gitlab-panel .scan-checkall .el-checkbox {
+  width: auto;
+  height: 20px;
+  padding-left: 26px;
+}
+
+.gitlab-panel .scan-checkall .el-checkbox::before {
+  top: 1px;
+}
+
+.gitlab-panel .scan-checkall .el-checkbox.is-checked::after {
+  left: 6px;
+  top: 4px;
+}
+
+.gitlab-repo-item .el-checkbox__input,
+.gitlab-panel .scan-checkall .el-checkbox__input {
+  position: absolute;
+  inset: 0;
+  width: 18px !important;
+  height: 18px !important;
+  margin: 0 !important;
+  opacity: 0;
+}
+
+.gitlab-repo-item .el-checkbox::before,
+.gitlab-panel .scan-checkall .el-checkbox::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: #161b22;
+  box-sizing: border-box;
+}
+
+.gitlab-repo-item.selected .el-checkbox::before,
+.gitlab-panel .scan-checkall .el-checkbox.is-checked::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.gitlab-repo-item.selected .el-checkbox::after,
+.gitlab-panel .scan-checkall .el-checkbox.is-checked::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 3px;
+  width: 5px;
+  height: 9px;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  box-sizing: border-box;
+}
+
+.gitlab-panel .scan-checkall .el-checkbox.is-indeterminate::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  width: 10px;
+  height: 2px;
+  background: #fff;
+}
+
+.scan-panel .scan-checkall .el-checkbox {
+  position: relative;
+  width: auto;
+  height: 20px;
+  padding-left: 26px;
+  margin: 0 8px 0 0;
+  display: inline-flex;
+  align-items: center;
+}
+
+.scan-panel .scan-checkall .el-checkbox__input {
+  position: absolute !important;
+  inset: 0 auto auto 0 !important;
+  width: 18px !important;
+  height: 18px !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+}
+
+.scan-panel .scan-checkall .el-checkbox__inner {
+  display: none !important;
+}
+
+.scan-panel .scan-checkall .el-checkbox::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  background: #161b22;
+  box-sizing: border-box;
+}
+
+.scan-panel .scan-checkall .el-checkbox.is-checked::before,
+.scan-panel .scan-checkall .el-checkbox.is-indeterminate::before {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.scan-panel .scan-checkall .el-checkbox.is-checked::after,
+.scan-panel .scan-checkall .el-checkbox.is-checked.is-indeterminate::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 4px;
+  width: 5px;
+  height: 9px;
+  background: transparent;
+  border: solid #fff;
+  border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+  box-sizing: border-box;
+}
+
+.scan-panel .scan-checkall .el-checkbox.is-indeterminate:not(.is-checked)::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  top: 9px;
+  width: 10px;
+  height: 2px;
+  background: #fff;
+  border: 0;
+  transform: none;
+}
+
+.gitlab-repo-item .el-button {
+  justify-self: end;
+  width: 64px;
+  margin-left: 0;
+}
+
+.gitlab-repo-item .scan-host {
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.gitlab-repo-item .scan-path {
+  margin-top: 3px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 760px) {
+  .gitlab-clone-field {
+    grid-template-columns: 1fr;
+    gap: 5px;
+  }
+
+  .gitlab-preset-chip {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
+}
+
+.gitlab-branches {
+  margin-top: 4px;
+  color: var(--blue);
+  font-size: 12px;
+}
+
+.gitlab-pull-status {
+  margin-top: 4px;
+  color: var(--green);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.gitlab-pull-status.fail {
+  color: var(--red);
+}
+
+.gitlab-diagnosis {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0;
+  margin-bottom: 8px;
+  background: #161b22;
+  overflow: hidden;
+}
+
+.gitlab-diagnosis-head {
+  width: 100%;
+  min-height: 34px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.gitlab-diagnosis-head:hover {
+  background: #1c2128;
+}
+
+.gitlab-diagnosis-head span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gitlab-diagnosis-head strong {
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gitlab-diagnosis-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent2);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gitlab-diagnosis-toggle .el-icon {
+  color: var(--muted);
+  transition: transform 0.18s ease;
+}
+
+.gitlab-diagnosis-toggle .el-icon.expanded {
+  transform: rotate(180deg);
+}
+
+.gitlab-diagnosis-body {
+  border-top: 1px solid var(--border);
+  padding: 8px;
+}
+
+.gitlab-diagnosis-user {
+  color: var(--text);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+.gitlab-diagnosis-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 4px 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gitlab-diagnosis-row strong {
+  color: var(--green);
+  font-weight: 600;
+}
+
+.gitlab-diagnosis-row.fail strong,
+.gitlab-diagnosis-row.fail em {
+  color: var(--red);
+}
+
+.gitlab-diagnosis-row em {
+  grid-column: 1 / -1;
+  font-style: normal;
+  word-break: break-word;
+  line-height: 1.5;
+}
+
 /* ========== 全局面板 ========== */
+.gp-presets {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 12px;
+  background: #161b22;
+}
+
+.gp-presets-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.gp-presets-head .el-button {
+  height: 22px;
+  padding: 0 4px;
+  margin-left: 0;
+  color: var(--accent2);
+}
+
+.gp-preset-list {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.gp-preset-item {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.gp-preset-item:hover {
+  background: #1c2128;
+}
+
+.gp-preset-item .el-radio {
+  width: 16px;
+  height: 16px;
+  margin-right: 0;
+  flex: none;
+}
+
+.gp-preset-item .el-radio__label {
+  display: none;
+}
+
+.gp-preset-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  line-height: 1.25;
+}
+
+.gp-preset-name {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gp-preset-host {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gp-preset-item .el-button {
+  flex: none;
+  height: 24px;
+  padding: 0 4px;
+  margin-left: 0;
+  color: var(--yellow);
+}
+
+.gp-preset-actions {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.gp-preset-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+.gp-batch-ssh {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #161b22;
+}
+
+.gp-batch-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.gp-batch-sub {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.gp-batch-ssh .el-button {
+  flex: none;
+  margin-left: 0;
+}
+
 .gp-grid {
   display: grid;
   grid-template-columns: 1fr;
@@ -543,6 +1430,25 @@ body {
   font-size: 12px;
   color: var(--muted);
   margin-bottom: 5px;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.field-label-row label {
+  margin-bottom: 0;
+}
+
+.field-label-row .el-button {
+  height: 22px;
+  padding: 0 4px;
+  margin-left: 0;
+  color: var(--accent2);
 }
 
 .card-field .el-input,
@@ -1095,12 +2001,28 @@ body {
 }
 
 /* ========== Cherry-Pick 抽屉 ========== */
+.pick-drawer {
+  display: flex;
+  flex-direction: column;
+}
+
 .pick-drawer .el-drawer__body {
+  flex: 1;
+  min-height: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
   background: var(--panel);
+}
+
+.pk {
+  flex: 1;
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .pk-head {

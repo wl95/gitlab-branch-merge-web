@@ -11,7 +11,7 @@
       <div class="bm-header">
         <el-icon class="bm-ico"><Operation /></el-icon>
         <div class="bm-title">批量分支管理</div>
-        <div class="bm-sub">对多个工程同时创建 / 删除 / 重命名远程分支</div>
+        <div class="bm-sub">对多个工程同时创建 / 删除 / 重命名远程分支，或切换本地工作区分支</div>
       </div>
     </template>
 
@@ -27,7 +27,7 @@
           </div>
         </div>
         <div v-if="!candidates.length" class="bm-empty">
-          暂无可操作的工程：请先在工程卡片中填写 SSH 远程地址
+          {{ emptyText }}
         </div>
         <div v-else class="bm-proj-list">
           <div
@@ -155,6 +155,68 @@
             </div>
           </div>
         </el-tab-pane>
+
+        <el-tab-pane label="切换本地分支" name="switchLocal">
+          <div class="bm-form">
+            <div class="bm-field">
+              <label>批量设置切换分支</label>
+              <div class="bm-field-row">
+                <el-select
+                  v-model="switchLocalName"
+                  filterable
+                  allow-create
+                  default-first-option
+                  clearable
+                  :loading="loadingBranches"
+                  :placeholder="selectPlaceholder"
+                  style="flex: 1"
+                >
+                  <el-option v-for="b in allBranches" :key="b" :label="b" :value="b" />
+                </el-select>
+                <el-button :disabled="!switchLocalNameText" @click="applySwitchLocalNameToAll">
+                  应用到已选
+                </el-button>
+                <el-button
+                  :icon="Refresh"
+                  :loading="loadingBranches"
+                  title="重新加载分支"
+                  @click="loadAllBranches"
+                >
+                  刷新
+                </el-button>
+              </div>
+              <div class="bm-field-hint">
+                默认使用每个工程卡片当前选中的源分支；可逐个调整，也可批量设置为相同分支。仅切换本地仓库当前分支，不会 reset 或 push。
+              </div>
+            </div>
+            <div class="bm-switch-list">
+              <div v-if="!selectedProjects.length" class="bm-empty small">
+                请先在上方选择要切换的本地工程
+              </div>
+              <div v-for="p in selectedProjects" :key="p.id" class="bm-switch-item">
+                <div class="bm-switch-main">
+                  <span class="bm-switch-name">{{ p.name || p.project_path || p.local_dir }}</span>
+                  <span class="bm-switch-dir">{{ p.local_dir }}</span>
+                </div>
+                <el-select
+                  v-model="switchLocalBranches[p.id]"
+                  filterable
+                  allow-create
+                  default-first-option
+                  clearable
+                  placeholder="选择该工程要切换到的分支"
+                >
+                  <el-option
+                    v-for="b in projectBranchOptions(p)"
+                    :key="`${p.id}-${b}`"
+                    :label="b"
+                    :value="b"
+                  />
+                </el-select>
+              </div>
+            </div>
+          </div>
+        </el-tab-pane>
       </el-tabs>
 
       <!-- 执行 -->
@@ -243,7 +305,7 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Operation,
@@ -253,6 +315,7 @@ import {
   CircleCloseFilled,
 } from '@element-plus/icons-vue'
 import { useProjectsStore } from '../stores/projects'
+import { useMergeStore } from '../stores/merge'
 import { api } from '../api'
 
 const props = defineProps({
@@ -261,6 +324,7 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const projects = useProjectsStore()
+const merge = useMergeStore()
 
 const tab = ref('create')
 const running = ref(false)
@@ -278,21 +342,33 @@ const namesDraft = ref('')
 const createFrom = ref('')
 const allBranches = ref([])
 const loadingBranches = ref(false)
+const currentLocalBranches = reactive({})
 const deleteNames = ref([])
 const oldName = ref('')
 const newName = ref('')
+const switchLocalName = ref('')
+const switchLocalBranches = reactive({})
+const switchLocalNameText = computed(() => String(switchLocalName.value || '').trim())
 
-// 仅对已配置 SSH 远程地址的工程可操作
-const candidates = computed(() =>
-  projects.projects.filter((p) => (p.ssh_host || '').trim())
+// 远程操作需要 SSH；本地切换需要已有 local_dir。
+const candidates = computed(() => {
+  if (tab.value === 'switchLocal') {
+    return projects.projects.filter((p) => (p.local_dir || '').trim())
+  }
+  return projects.projects.filter((p) => (p.ssh_host || '').trim())
+})
+const emptyText = computed(() =>
+  tab.value === 'switchLocal'
+    ? '暂无可切换的本地工程：请先在工程卡片中拉取项目到本地'
+    : '暂无可操作的工程：请先在工程卡片中填写 SSH 远程地址'
 )
 
 const checkedIds = ref(new Set())
-const checkedCount = computed(() => checkedIds.value.size)
 
 const selectedProjects = computed(() =>
-  projects.projects.filter((p) => checkedIds.value.has(p.id))
+  candidates.value.filter((p) => checkedIds.value.has(p.id))
 )
+const checkedCount = computed(() => selectedProjects.value.length)
 
 function toggle(p) {
   const s = new Set(checkedIds.value)
@@ -307,6 +383,40 @@ function uncheckAll() {
   checkedIds.value = new Set()
 }
 
+function defaultSwitchBranch(p) {
+  return (
+    currentLocalBranches[p.id] ||
+    p.source_branch ||
+    switchLocalNameText.value ||
+    ''
+  ).trim()
+}
+
+function ensureSwitchLocalBranches() {
+  selectedProjects.value.forEach((p) => {
+    if (!switchLocalBranches[p.id]) switchLocalBranches[p.id] = defaultSwitchBranch(p)
+  })
+  const validIds = new Set(selectedProjects.value.map((p) => String(p.id)))
+  Object.keys(switchLocalBranches).forEach((id) => {
+    if (!validIds.has(String(id))) delete switchLocalBranches[id]
+  })
+}
+
+function applySwitchLocalNameToAll() {
+  const branch = switchLocalNameText.value
+  if (!branch) return
+  selectedProjects.value.forEach((p) => {
+    switchLocalBranches[p.id] = branch
+  })
+}
+
+function projectBranchOptions(p) {
+  const set = new Set([...(p.branches || []), ...allBranches.value])
+  const current = switchLocalBranches[p.id] || p.source_branch
+  if (current) set.add(current)
+  return [...set].filter(Boolean).sort((a, b) => a.localeCompare(b))
+}
+
 function appendBranchLogs(entries) {
   entries.forEach(([id, text]) => {
     if (!text.includes('执行命令:')) return
@@ -318,8 +428,9 @@ function appendBranchLogs(entries) {
 }
 
 async function startBranchLogPolling() {
-  stopBranchLogPolling()
+  await stopBranchLogPolling()
   branchLogs.value = []
+  await merge.startCommandLogSession()
   try {
     const r = await api.logs(0)
     branchLogSince.value = r.since || 0
@@ -343,6 +454,7 @@ async function stopBranchLogPolling(flush = true) {
   clearInterval(branchLogTimer)
   branchLogTimer = null
   if (flush) await fetchBranchLogs()
+  await merge.stopCommandLogSession()
 }
 
 async function fetchBranchUndo() {
@@ -400,12 +512,30 @@ async function loadAllBranches() {
   }
   loadingBranches.value = true
   try {
+    await merge.startCommandLogSession()
     const tasks = list.map(async (p) => {
       try {
-        return await projects.loadBranches({
-          ssh_host: p.ssh_host,
-          project_path: p.project_path,
-        })
+        const data = tab.value === 'switchLocal'
+          ? await projects.loadBranchesWithCurrent({
+            ssh_host: p.ssh_host,
+            project_path: p.project_path,
+            local_dir: p.local_dir,
+            global: { ...projects.global },
+          })
+          : {
+            branches: await projects.loadBranches({
+              ssh_host: p.ssh_host,
+              project_path: p.project_path,
+              local_dir: p.local_dir,
+              global: { ...projects.global },
+            }),
+            currentBranch: '',
+          }
+        if (tab.value === 'switchLocal' && data.currentBranch) {
+          currentLocalBranches[p.id] = data.currentBranch
+          switchLocalBranches[p.id] = data.currentBranch
+        }
+        return data.branches
       } catch {
         return []
       }
@@ -415,6 +545,7 @@ async function loadAllBranches() {
     lists.forEach((l) => (l || []).forEach((b) => b && set.add(b)))
     allBranches.value = [...set].sort((a, b) => a.localeCompare(b))
   } finally {
+    await merge.stopCommandLogSession()
     loadingBranches.value = false
   }
 }
@@ -456,13 +587,26 @@ watch(
 // 勾选工程变化时，防抖重新加载这些工程的全部分支
 let branchLoadTimer = null
 watch(checkedIds, () => {
+  if (tab.value === 'switchLocal') ensureSwitchLocalBranches()
   if (!props.modelValue) return
   clearTimeout(branchLoadTimer)
   branchLoadTimer = setTimeout(loadAllBranches, 300)
 })
 
+watch(tab, () => {
+  if (tab.value === 'switchLocal') {
+    ensureSwitchLocalBranches()
+    loadAllBranches()
+  }
+})
+
 const runLabel = computed(() => {
-  const map = { create: '创建分支', delete: '删除分支', rename: '重命名分支' }
+  const map = {
+    create: '创建分支',
+    delete: '删除分支',
+    rename: '重命名分支',
+    switchLocal: '切换本地分支',
+  }
   return map[tab.value] || '执行'
 })
 
@@ -503,6 +647,7 @@ async function run() {
       projects: payloads,
       branch_names: names,
       from_branch: from,
+      global: { ...projects.global },
     })
   } else if (tab.value === 'delete') {
     const names = deleteNames.value
@@ -526,7 +671,26 @@ async function run() {
     } catch {
       return // 用户取消
     }
-    call = () => api.branchDelete({ projects: payloads, branch_names: names })
+    call = () => api.branchDelete({
+      projects: payloads,
+      branch_names: names,
+      global: { ...projects.global },
+    })
+  } else if (tab.value === 'switchLocal') {
+    ensureSwitchLocalBranches()
+    const missing = list.find((p) => !String(switchLocalBranches[p.id] || '').trim())
+    if (missing) {
+      ElMessage.warning(`请为工程「${missing.name || missing.local_dir}」选择要切换的分支`)
+      return
+    }
+    const switchPayloads = list.map((p) => ({
+      ...serialize(p),
+      switch_branch: String(switchLocalBranches[p.id] || '').trim(),
+    }))
+    call = () => api.branchSwitchLocal({
+      projects: switchPayloads,
+      global: { ...projects.global },
+    })
   } else {
     const oldn = oldName.value.trim()
     const newn = newName.value.trim()
@@ -538,6 +702,7 @@ async function run() {
       projects: payloads,
       old_name: oldn,
       new_name: newn,
+      global: { ...projects.global },
     })
   }
 
@@ -554,6 +719,14 @@ async function run() {
     else ElMessage.error('全部失败，请检查各工程错误信息')
     // 操作成功后刷新工程分支缓存
     if (okCount.value > 0) {
+      if (tab.value === 'switchLocal') {
+        selectedProjects.value.forEach((p) => {
+          const r = results.value.find((x) => x.ok && x.name === p.name)
+          const branch = String(switchLocalBranches[p.id] || '').trim()
+          if (r && branch) p.source_branch = branch
+        })
+        await projects.save()
+      }
       selectedProjects.value.forEach((p) => projects.loadBranchesFor(p.id))
     }
   } catch (e) {
@@ -756,6 +929,54 @@ async function undoBranchOperation() {
   color: var(--danger);
   background: rgba(244, 93, 93, 0.08);
   border: 1px solid rgba(244, 93, 93, 0.25);
+}
+
+.bm-switch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.bm-empty.small {
+  padding: 10px;
+}
+
+.bm-switch-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 280px);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.bm-switch-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.bm-switch-name {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bm-switch-dir {
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 执行区 */

@@ -62,7 +62,7 @@ def run_git(args, cwd, check=True, timeout=None):
     timeout: 超时秒数；超时后抛 RuntimeError（适合网络类命令，防挂起）。
     """
     cmd = ["git", "-C", str(cwd)] + args
-    logging.debug("执行命令: %s", " ".join(cmd))
+    logging.info("执行命令: %s", " ".join(cmd))
     try:
         proc = subprocess.run(
             cmd,
@@ -76,11 +76,6 @@ def run_git(args, cwd, check=True, timeout=None):
         raise RuntimeError(
             f"命令执行超时(>{timeout}s): {' '.join(cmd)}\n{e}"
         )
-    if proc.returncode != 0 and check:
-        raise RuntimeError(
-            f"命令执行失败 [{proc.returncode}]: {' '.join(cmd)}\n{proc.stdout}"
-        )
-    return proc
     if proc.returncode != 0 and check:
         raise RuntimeError(
             f"命令执行失败 [{proc.returncode}]: {' '.join(cmd)}\n{proc.stdout}"
@@ -262,6 +257,17 @@ def build_remote_url(conf):
     return f"{host}:{path}"
 
 
+def repo_dir_name(conf):
+    """根据项目配置推导本地仓库目录名。"""
+    path_part = (
+        (conf.get("project_path") or "").strip("/")
+        or extract_path_from_url(conf.get("ssh_host") or "")
+        or (conf.get("name") or "").strip()
+        or "repo"
+    )
+    return (path_part.rstrip("/").split("/")[-1] or "repo").replace(".git", "")
+
+
 # ---------------------------------------------------------------- 仓库操作
 
 def ensure_repo(conf, check_branches=True):
@@ -274,26 +280,37 @@ def ensure_repo(conf, check_branches=True):
         run_git(["remote", "set-url", conf["remote"], remote_url], str(local_dir))
         run_git(["fetch", "--prune", "--tags", conf["remote"]], str(local_dir))
     else:
-        logging.info("本地仓库不存在，开始 clone: %s", remote_url)
-        local_dir.parent.mkdir(parents=True, exist_ok=True)
-        # 网络抖动时重试一次，失败则清理残留目录并保留错误信息
-        last_err = None
-        for attempt in (1, 2):
-            try:
-                run_git(["clone", "--no-single-branch", remote_url, str(local_dir)],
-                        str(local_dir.parent))
-                last_err = None
-                break
-            except SystemExit as e:
-                last_err = e
-                logging.warning("clone 第 %d 次失败（%s），稍后重试...", attempt, e)
-                if local_dir.exists():
-                    import shutil
-                    shutil.rmtree(local_dir, ignore_errors=True)
-        if last_err is not None:
-            raise SystemExit(f"clone 失败: {last_err}\n"
-                             f"请检查网络/SSH 密钥，或确认目录已存在本地仓库可直接复用")
-        run_git(["fetch", "--prune", "--tags", conf["remote"]], str(local_dir))
+        if local_dir.is_dir() and any(local_dir.iterdir()):
+            parent_dir = local_dir
+            local_dir = parent_dir / repo_dir_name(conf)
+            conf["local_dir"] = str(local_dir)
+            logging.info("拉取目录非空，按父目录处理: %s -> %s", parent_dir, local_dir)
+
+        if is_git_repo(local_dir):
+            logging.info("本地仓库已存在，拉取远程更新: %s", local_dir)
+            run_git(["remote", "set-url", conf["remote"], remote_url], str(local_dir))
+            run_git(["fetch", "--prune", "--tags", conf["remote"]], str(local_dir))
+        else:
+            logging.info("本地仓库不存在，开始 clone: %s", remote_url)
+            local_dir.parent.mkdir(parents=True, exist_ok=True)
+            # 网络抖动时重试一次，失败则清理残留目录并保留错误信息
+            last_err = None
+            for attempt in (1, 2):
+                try:
+                    run_git(["clone", "--no-single-branch", remote_url, str(local_dir)],
+                            str(local_dir.parent))
+                    last_err = None
+                    break
+                except SystemExit as e:
+                    last_err = e
+                    logging.warning("clone 第 %d 次失败（%s），稍后重试...", attempt, e)
+                    if local_dir.exists():
+                        import shutil
+                        shutil.rmtree(local_dir, ignore_errors=True)
+            if last_err is not None:
+                raise SystemExit(f"clone 失败: {last_err}\n"
+                                 f"请检查网络/SSH 密钥，或确认目录已存在本地仓库可直接复用")
+            run_git(["fetch", "--prune", "--tags", conf["remote"]], str(local_dir))
 
     # 仅用于查看 commit / cherry-pick 时跳过分支校验
     if not check_branches:
@@ -702,6 +719,47 @@ def rename_branch(conf, old_name, new_name, remote=None, allow_protected_old=Fal
         "old_name": old,
         "new_name": new,
         "sha": old_sha,
+    }
+
+
+def switch_local_branch(conf, branch_name, remote=None):
+    """切换本地工作区到指定分支；不 reset、不 push，工作区不干净时拒绝。"""
+    name = _validate_branch_name(branch_name)
+    remote = remote or conf.get("remote") or "origin"
+    local_dir = (conf.get("local_dir") or "").strip()
+    if not (local_dir and Path(local_dir).exists() and is_git_repo(local_dir)):
+        raise RuntimeError("本地仓库不存在，请先拉取项目到本地")
+
+    status = run_git(["status", "--porcelain"], local_dir, check=False).stdout.strip()
+    if status:
+        raise RuntimeError(f"工作区有未提交改动，拒绝切换分支:\n{status}")
+
+    commands = [format_git_command(["fetch", "--prune", remote], local_dir)]
+    run_git(["fetch", "--prune", remote], local_dir)
+
+    has_local = run_git(
+        ["show-ref", "--verify", "--quiet", f"refs/heads/{name}"],
+        local_dir,
+        check=False,
+    ).returncode == 0
+    if has_local:
+        commands.append(format_git_command(["checkout", name], local_dir))
+        run_git(["checkout", name], local_dir)
+    else:
+        remote_ref = f"{remote}/{name}"
+        has_remote = run_git(
+            ["rev-parse", "--verify", "--quiet", remote_ref],
+            local_dir,
+            check=False,
+        ).returncode == 0
+        if not has_remote:
+            raise RuntimeError(f"本地和远端均不存在分支: {name}")
+        commands.append(format_git_command(["checkout", "-b", name, remote_ref], local_dir))
+        run_git(["checkout", "-b", name, remote_ref], local_dir)
+
+    current = run_git(["rev-parse", "--abbrev-ref", "HEAD"], local_dir).stdout.strip()
+    return True, f"已切换到本地分支 {current}", commands, {
+        "branch_name": current,
     }
 
 
