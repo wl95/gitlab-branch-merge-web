@@ -11,32 +11,35 @@ function apiCandidates(path) {
 async function request(path, method = 'GET', body = null) {
   const opts = { method, headers: { 'Content-Type': 'application/json' } }
   if (body !== null) opts.body = JSON.stringify(body)
-  let res = null
+  let last = null
   const errors = []
   for (const url of apiCandidates(path)) {
     try {
-      res = await fetch(url, opts)
-      break
+      const res = await fetch(url, opts)
+      let data = null
+      try {
+        data = await res.json()
+      } catch (e) {
+        /* 非 JSON 响应，通常是前端 dev server 的 404/HTML 回退 */
+      }
+
+      if (res.ok && !(data && data.ok === false)) return data
+
+      const message = (data && data.error) || (res.ok ? '操作失败' : `请求失败 (${res.status})`)
+      last = { url, status: res.status, data, message }
+
+      // 有 JSON 错误体时说明已经命中后端，直接保留业务错误。
+      if (data) break
+      errors.push(`${url} ${res.status}`)
     } catch (e) {
-      errors.push(url)
+      errors.push(`${url} ${e.message || '连接失败'}`)
     }
   }
-  if (!res) {
+
+  if (!last) {
     throw new Error(`无法连接后端服务，已尝试：${errors.join('、')}。请确认 ./start_webapp.sh 正在运行，且浏览器访问 http://127.0.0.1:8765/`)
   }
-  let data = null
-  try {
-    data = await res.json()
-  } catch (e) {
-    /* 非 JSON 响应 */
-  }
-  if (!res.ok) {
-    throw new Error((data && data.error) || `请求失败 (${res.status})`)
-  }
-  if (data && data.ok === false) {
-    throw new Error(data.error || '操作失败')
-  }
-  return data
+  throw new Error(last.message)
 }
 
 async function diagnoseBackend() {

@@ -1510,7 +1510,7 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 )
                 self._send_json({"ok": True, "message": msg})
-            except Exception as e:
+            except (Exception, SystemExit) as e:
                 self._send_json({"ok": False, "error": f"pick 失败: {e}"}, code=400)
         elif parsed.path == "/api/merge":
             projects = normalize_projects(body.get("projects", []), global_cfg=request_global)

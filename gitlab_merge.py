@@ -361,6 +361,28 @@ def checkout_target(remote, branch, local_dir):
     return True
 
 
+def current_branch(local_dir):
+    """返回当前本地分支名；detached HEAD 时返回空字符串。"""
+    return run_git(["branch", "--show-current"], local_dir, check=False).stdout.strip()
+
+
+def restore_branch(local_dir, branch):
+    """操作结束后尽量切回原分支，避免缓存仓库停留在目标分支。"""
+    if not branch:
+        logging.info("执行前不是普通本地分支，跳过切回")
+        return
+    if current_branch(local_dir) == branch:
+        return
+    status = run_git(["status", "--porcelain"], local_dir, check=False).stdout.strip()
+    if status:
+        logging.warning("工作区仍有改动，跳过切回原分支 %s:\n%s", branch, status)
+        return
+    logging.info("执行命令: %s", format_git_command(["checkout", branch], local_dir))
+    proc = run_git(["checkout", branch], local_dir, check=False)
+    if proc.returncode != 0:
+        logging.warning("切回原分支 %s 失败: %s", branch, proc.stdout.strip())
+
+
 def merge_branch(remote, source, target, conf, local_dir, dry_run):
     """把源分支合并到单个目标分支。
 
@@ -1125,30 +1147,34 @@ def cherry_pick_commits(conf, commits, target_branch, dry_run=False):
     """把选中的 commit 依次 cherry-pick 到指定目标分支，成功则推送。返回提示文案。"""
     local_dir = ensure_repo(conf, check_branches=False)
     remote = conf["remote"]
+    original_branch = current_branch(str(local_dir))
 
-    if not checkout_target(remote, target_branch, str(local_dir)):
-        raise SystemExit(f"目标分支 {target_branch} 工作区不干净，请先清理")
+    try:
+        if not checkout_target(remote, target_branch, str(local_dir)):
+            raise SystemExit(f"目标分支 {target_branch} 工作区不干净，请先清理")
 
-    if dry_run:
-        logging.info("[演练] 将执行: git cherry-pick %s", " ".join(commits))
-        return "演练模式，未实际执行"
+        if dry_run:
+            logging.info("[演练] 将执行: git cherry-pick %s", " ".join(commits))
+            return "演练模式，未实际执行"
 
-    picked = []
-    for sha in commits:
-        logging.info("执行命令: %s", format_git_command(["cherry-pick", sha], local_dir))
-        proc = run_git(["cherry-pick", sha], str(local_dir), check=False)
-        if proc.returncode != 0:
-            logging.info("执行命令: %s", format_git_command(["cherry-pick", "--abort"], local_dir))
-            run_git(["cherry-pick", "--abort"], str(local_dir), check=False)
-            raise SystemExit(f"cherry-pick {sha[:8]} 失败/冲突: {proc.stdout.strip()}")
-        picked.append(sha)
+        picked = []
+        for sha in commits:
+            logging.info("执行命令: %s", format_git_command(["cherry-pick", sha], local_dir))
+            proc = run_git(["cherry-pick", sha], str(local_dir), check=False)
+            if proc.returncode != 0:
+                logging.info("执行命令: %s", format_git_command(["cherry-pick", "--abort"], local_dir))
+                run_git(["cherry-pick", "--abort"], str(local_dir), check=False)
+                raise SystemExit(f"cherry-pick {sha[:8]} 失败/冲突: {proc.stdout.strip()}")
+            picked.append(sha)
 
-    if conf["push_on_success"]:
-        logging.info("执行命令: %s", format_git_command(["push", remote, target_branch], local_dir))
-        push = run_git(["push", remote, target_branch], str(local_dir), check=False)
-        if push.returncode != 0:
-            raise SystemExit(f"推送失败: {push.stdout.strip()}")
-    return f"已成功 pick {len(picked)} 个 commit 到 {target_branch}"
+        if conf["push_on_success"]:
+            logging.info("执行命令: %s", format_git_command(["push", remote, target_branch], local_dir))
+            push = run_git(["push", remote, target_branch], str(local_dir), check=False)
+            if push.returncode != 0:
+                raise SystemExit(f"推送失败: {push.stdout.strip()}")
+        return f"已成功 pick {len(picked)} 个 commit 到 {target_branch}"
+    finally:
+        restore_branch(str(local_dir), original_branch)
 
 
 # ---------------------------------------------------------------- 主流程
