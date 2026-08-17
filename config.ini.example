@@ -28,3 +28,9 @@ project_path = group/example
 source_branch = feature/xxx
 target_branches = develop,release
 local_dir = ./repos/example
+# 保护分支无法直推时，填写下列 GitLab API 信息可自动创建临时分支和 MR
+gitlab_url = http://your-gitlab-host
+gitlab_project_id =
+gitlab_token =
+gitlab_api_version = v4
+gitlab_token_in_query = false

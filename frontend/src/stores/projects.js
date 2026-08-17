@@ -589,11 +589,6 @@ export const useProjectsStore = defineStore('projects', {
         branches,
         branchesLoading,
         addedFromScan,
-        gitlab_project_id,
-        gitlab_token,
-        gitlab_url,
-        gitlab_api_version,
-        gitlab_token_in_query,
         ...rest
       }) => rest)
     },

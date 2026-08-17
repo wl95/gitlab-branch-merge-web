@@ -9,7 +9,7 @@ const PAGE_SIZE = 50
 export const usePickStore = defineStore('pick', {
   state: () => ({
     visible: false,
-    ctx: null, // 工程快照 { id, name, ssh_host, project_path, local_dir, source_branch, target_branches }
+    ctx: null, // 工程快照 { id, name, ssh_host, project_path, local_dir, source_branch, target_branches, branches }
     sourceBranch: '',
     commits: [], // 源分支已加载的 commit（分页累计）
     loading: false,
@@ -28,6 +28,18 @@ export const usePickStore = defineStore('pick', {
 
   getters: {
     targets: (s) => (s.ctx && s.ctx.target_branches ? s.ctx.target_branches : []),
+    pickTargets: (s) => {
+      const branches = s.ctx && s.ctx.branches ? s.ctx.branches : []
+      const mergeTargets = new Set(s.ctx && s.ctx.target_branches ? s.ctx.target_branches : [])
+      return branches.filter((b) => b && b !== s.sourceBranch && !mergeTargets.has(b))
+    },
+    pickCascade: (s) => {
+      const targets = s.ctx && s.ctx.target_branches ? s.ctx.target_branches : []
+      if (!s.pickTarget) return []
+      const index = targets.indexOf(s.pickTarget)
+      if (index < 0) return targets
+      return targets.slice(index + 1)
+    },
     selectedCount: (s) => s.selected.length,
     filteredCommits: (s) => {
       const kw = s.searchKw.trim().toLowerCase()
@@ -49,6 +61,11 @@ export const usePickStore = defineStore('pick', {
         local_dir: c.local_dir,
         source_branch: c.source_branch,
         target_branches: c.target_branches,
+        gitlab_url: c.gitlab_url,
+        gitlab_project_id: c.gitlab_project_id,
+        gitlab_token: c.gitlab_token,
+        gitlab_api_version: c.gitlab_api_version,
+        gitlab_token_in_query: c.gitlab_token_in_query,
         global: { ...projectsStore.global },
       }
     },
@@ -65,6 +82,12 @@ export const usePickStore = defineStore('pick', {
         local_dir: p.local_dir,
         source_branch: p.source_branch,
         target_branches: [...p.target_branches],
+        branches: [...(p.branches || [])],
+        gitlab_url: p.gitlab_url,
+        gitlab_project_id: p.gitlab_project_id,
+        gitlab_token: p.gitlab_token,
+        gitlab_api_version: p.gitlab_api_version,
+        gitlab_token_in_query: p.gitlab_token_in_query,
       }
       this.sourceBranch = p.source_branch || ''
       this.commits = []
@@ -73,7 +96,7 @@ export const usePickStore = defineStore('pick', {
       this.hasMore = false
       this.searchKw = ''
       this.selected = []
-      this.pickTarget = ''
+      this.pickTarget = this.pickTargets[0] || ''
       this.viewTargetBranch = (p.target_branches && p.target_branches[0]) || ''
       this.targetCommits = []
       this.visible = true
@@ -84,6 +107,12 @@ export const usePickStore = defineStore('pick', {
     close() {
       this.visible = false
       this.ctx = null
+    },
+
+    refreshPickTarget() {
+      if (!this.pickTarget || !this.pickTargets.includes(this.pickTarget)) {
+        this.pickTarget = this.pickTargets[0] || ''
+      }
     },
 
     toggle(sha) {
@@ -117,6 +146,7 @@ export const usePickStore = defineStore('pick', {
         this.commits = reset ? r.commits || [] : this.commits.concat(r.commits || [])
         this.total = r.total || 0
         this.hasMore = !!r.has_more
+        this.refreshPickTarget()
       } catch (e) {
         if (reset) this.commits = []
         ElMessage.error((reset ? '获取 commit 失败：' : '加载更多失败：') + e.message)

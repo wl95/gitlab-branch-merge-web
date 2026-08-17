@@ -194,6 +194,15 @@ def normalize_projects(submitted, resolve_vars=True, global_cfg=None):
         submitted_local = (s.get("local_dir") or "").strip()
         if submitted_local:
             p["local_dir"] = submitted_local
+        for key in (
+            "gitlab_url",
+            "gitlab_project_id",
+            "gitlab_token",
+            "gitlab_api_version",
+            "gitlab_token_in_query",
+        ):
+            if s.get(key) is not None:
+                p[key] = s.get(key)
         if not p.get("local_dir"):
             dir_part = (p.get("project_path")
                         or gm.extract_path_from_url(p["ssh_host"])
@@ -230,5 +239,12 @@ def save_projects(projects):
         local_dir = (p.get("local_dir") or "").strip()
         if local_dir:
             cfg.set(sec, "local_dir", local_dir)
+        for key in ("gitlab_url", "gitlab_project_id", "gitlab_token", "gitlab_api_version"):
+            val = (p.get(key) or "").strip()
+            if val:
+                cfg.set(sec, key, val)
+        if p.get("gitlab_token_in_query") is not None:
+            cfg.set(sec, "gitlab_token_in_query",
+                    "true" if bool(p.get("gitlab_token_in_query")) else "false")
     with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
         cfg.write(f)

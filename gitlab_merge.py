@@ -24,7 +24,11 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import quote, urlencode, urlparse, urlunparse
+from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------- 基础工具
 
@@ -156,6 +160,11 @@ def load_config(config_path):
                                       proj["stop_on_conflict"], bool)
         proj["remote"] = _b(cfg, section, "remote", proj["remote"], str)
         proj["ssh_port"] = _b(cfg, section, "ssh_port", proj["ssh_port"], int)
+        proj["gitlab_url"] = _b(cfg, section, "gitlab_url", "", str)
+        proj["gitlab_project_id"] = _b(cfg, section, "gitlab_project_id", "", str)
+        proj["gitlab_token"] = _b(cfg, section, "gitlab_token", "", str)
+        proj["gitlab_api_version"] = _b(cfg, section, "gitlab_api_version", "v4", str)
+        proj["gitlab_token_in_query"] = _b(cfg, section, "gitlab_token_in_query", False, bool)
 
         errors = []
         if not proj["ssh_host"]:
@@ -200,6 +209,11 @@ def load_config(config_path):
                                       proj["stop_on_conflict"], bool)
         proj["local_dir"] = cfg.get("repository", "local_dir", fallback="").strip()
         proj["remote"] = _b(cfg, "repository", "remote", proj["remote"], str)
+        proj["gitlab_url"] = _b(cfg, "gitlab", "gitlab_url", "", str)
+        proj["gitlab_project_id"] = _b(cfg, "gitlab", "gitlab_project_id", "", str)
+        proj["gitlab_token"] = _b(cfg, "gitlab", "gitlab_token", "", str)
+        proj["gitlab_api_version"] = _b(cfg, "gitlab", "gitlab_api_version", "v4", str)
+        proj["gitlab_token_in_query"] = _b(cfg, "gitlab", "gitlab_token_in_query", False, bool)
         if not proj["local_dir"]:
             dir_part = (proj["project_path"]
                         or extract_path_from_url(proj["ssh_host"])
@@ -255,6 +269,115 @@ def build_remote_url(conf):
     if conf["ssh_port"] and int(conf["ssh_port"]) != 22:
         return f"ssh://{host}:{conf['ssh_port']}/{path}"
     return f"{host}:{path}"
+
+
+def gitlab_base_url(raw_url):
+    """从 GitLab 页面/API 地址里提取站点根地址。"""
+    raw = (raw_url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else "http://" + raw)
+    if not parsed.netloc:
+        return ""
+    return urlunparse((parsed.scheme or "http", parsed.netloc, "", "", "", "")).rstrip("/")
+
+
+def gitlab_api_request(conf, api_path, method="GET", params=None, timeout=20):
+    """调用当前工程携带的 GitLab API 配置。"""
+    token = (conf.get("gitlab_token") or "").strip()
+    base_url = gitlab_base_url(conf.get("gitlab_url") or "")
+    api_version = (conf.get("gitlab_api_version") or "v4").strip() or "v4"
+    token_in_query = bool(conf.get("gitlab_token_in_query"))
+    if not (token and base_url):
+        raise RuntimeError("缺少 GitLab token 或 GitLab 地址，无法自动创建 MR")
+
+    request_params = dict(params or {})
+    if token and token_in_query:
+        request_params["private_token"] = token
+    data = None
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 GitLabBranchMergeWeb/1.0",
+        "Connection": "close",
+    }
+    if method.upper() in {"POST", "PUT"}:
+        data = urlencode(request_params).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        query = ""
+    else:
+        query = urlencode(request_params)
+    if token and not token_in_query:
+        headers["PRIVATE-TOKEN"] = token
+
+    url = f"{base_url}/api/{api_version}{api_path}"
+    if query:
+        url += "?" + query
+    req = Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            body = resp.read().decode(charset)
+            return json.loads(body) if body else {}
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"GitLab API {api_version} {e.code}: {detail or e.reason}") from e
+
+
+def merge_via_gitlab_mr(conf, local_dir, remote, source, target, before_sha, after_sha):
+    """保护分支无法直推时，推临时分支并创建/尝试合并 MR。"""
+    project_id = conf.get("gitlab_project_id")
+    if not project_id:
+        raise RuntimeError("缺少 GitLab project_id，无法自动创建 MR")
+
+    suffix = f"{int(time.time())}-{after_sha[:8]}"
+    temp_branch = f"merge/{target.replace('/', '-')}-{suffix}"
+    project_ref = quote(str(project_id), safe="")
+    title = f"Merge {source} into {target}"
+    description = (
+        "由 GitLab 分支合并管理台自动创建。\n\n"
+        f"- source: `{source}`\n"
+        f"- target: `{target}`\n"
+        f"- before: `{before_sha}`\n"
+        f"- after: `{after_sha}`\n"
+    )
+
+    logging.info("执行命令: %s", format_git_command(["branch", "-f", temp_branch, after_sha], local_dir))
+    run_git(["branch", "-f", temp_branch, after_sha], local_dir)
+    logging.info("执行命令: %s", format_git_command(["push", "-u", remote, f"{temp_branch}:{temp_branch}"], local_dir))
+    push = run_git(["push", "-u", remote, f"{temp_branch}:{temp_branch}"], local_dir, check=False)
+    if push.returncode != 0:
+        raise RuntimeError(f"推送临时分支失败: {push.stdout.strip()}")
+
+    try:
+        mr = gitlab_api_request(conf, f"/projects/{project_ref}/merge_requests", "POST", {
+            "source_branch": temp_branch,
+            "target_branch": target,
+            "title": title,
+            "description": description,
+            "remove_source_branch": "true",
+        })
+    except Exception:
+        logging.info("执行命令: %s", format_git_command(["push", remote, "--delete", temp_branch], local_dir))
+        run_git(["push", remote, "--delete", temp_branch], local_dir, check=False)
+        raise
+    mr_url = mr.get("web_url") or ""
+    iid = mr.get("iid")
+    logging.info("[%s] 已创建 MR: %s", conf["name"], mr_url or iid)
+
+    if not iid:
+        return {"merged": False, "mr_url": mr_url, "temp_branch": temp_branch}
+
+    try:
+        merged = gitlab_api_request(conf, f"/projects/{project_ref}/merge_requests/{iid}/merge", "PUT", {
+            "should_remove_source_branch": "true",
+        })
+        logging.info("[%s] MR 已合并，临时分支将由 GitLab 删除: %s",
+                     conf["name"], merged.get("web_url") or mr_url or iid)
+        return {"merged": True, "mr_url": merged.get("web_url") or mr_url, "temp_branch": temp_branch}
+    except Exception as e:
+        logging.warning("[%s] MR 已创建但未自动合并: %s。请在 GitLab 页面合并，合并后会删除临时分支。",
+                        conf["name"], e)
+        return {"merged": False, "mr_url": mr_url, "temp_branch": temp_branch}
 
 
 def repo_dir_name(conf):
@@ -394,57 +517,77 @@ def merge_branch(remote, source, target, conf, local_dir, dry_run):
     logging.info("=" * 60)
     logging.info("[%s] 合并: %s  ->  %s", conf["name"], source, target)
     logging.info("=" * 60)
+    original_branch = current_branch(local_dir)
 
-    if not checkout_target(remote, target, local_dir):
-        logging.error("[%s] 目标分支 %s 工作区不干净，跳过", conf["name"], target)
-        return False, None, None
+    try:
+        if not checkout_target(remote, target, local_dir):
+            logging.error("[%s] 目标分支 %s 工作区不干净，跳过", conf["name"], target)
+            return False, None, None
 
-    # 合并前快照：checkout_target 已 reset --hard 到 origin/<target>
-    before_sha = run_git(["rev-parse", "HEAD"], local_dir).stdout.strip()
+        # 合并前快照：checkout_target 已 reset --hard 到 origin/<target>
+        before_sha = run_git(["rev-parse", "HEAD"], local_dir).stdout.strip()
 
-    # 合并源分支（使用远程引用，保证最新）
-    src_ref = f"{remote}/{source}"
-    merge_args = ["merge"]
-    if conf["no_ff"]:
-        merge_args.append("--no-ff")
-    merge_args += [
-        src_ref,
-        "-m", f"Merge branch '{source}' into {target}",
-    ]
+        # 合并源分支（使用远程引用，保证最新）
+        src_ref = f"{remote}/{source}"
+        merge_args = ["merge"]
+        if conf["no_ff"]:
+            merge_args.append("--no-ff")
+        merge_args += [
+            src_ref,
+            "-m", f"Merge branch '{source}' into {target}",
+        ]
 
-    if dry_run:
-        logging.info("[演练] 将执行: git %s", " ".join(merge_args))
-        return True, None, None
-
-    logging.info("执行命令: %s", format_git_command(merge_args, local_dir))
-    proc = run_git(merge_args, local_dir, check=False)
-    if proc.returncode != 0:
-        if "CONFLICT" in proc.stdout:
-            logging.error("[%s] 合并冲突:\n%s", conf["name"], proc.stdout)
-            logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
-            run_git(["merge", "--abort"], local_dir, check=False)
-            logging.info("已执行 git merge --abort 回滚")
-        else:
-            logging.error("[%s] 合并失败:\n%s", conf["name"], proc.stdout)
-            logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
-            run_git(["merge", "--abort"], local_dir, check=False)
-        return False, before_sha, None
-
-    after_sha = run_git(["rev-parse", "HEAD"], local_dir).stdout.strip()
-    logging.info("[%s] 合并成功: %s", conf["name"], target)
-
-    if conf["push_on_success"]:
         if dry_run:
-            logging.info("[演练] 将执行: git push %s %s", remote, target)
-            return True, before_sha, after_sha
-        logging.info("执行命令: %s", format_git_command(["push", remote, target], local_dir))
-        push = run_git(["push", remote, target], local_dir, check=False)
-        if push.returncode != 0:
-            logging.error("[%s] 推送失败:\n%s", conf["name"], push.stdout)
-            return False, before_sha, after_sha
-        logging.info("[%s] 已推送: %s -> %s/%s", conf["name"], target, remote, target)
+            logging.info("[演练] 将执行: git %s", " ".join(merge_args))
+            return True, None, None
 
-    return True, before_sha, after_sha
+        logging.info("执行命令: %s", format_git_command(merge_args, local_dir))
+        proc = run_git(merge_args, local_dir, check=False)
+        if proc.returncode != 0:
+            if "CONFLICT" in proc.stdout:
+                logging.error("[%s] 合并冲突:\n%s", conf["name"], proc.stdout)
+                logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
+                run_git(["merge", "--abort"], local_dir, check=False)
+                logging.info("已执行 git merge --abort 回滚")
+            else:
+                logging.error("[%s] 合并失败:\n%s", conf["name"], proc.stdout)
+                logging.info("执行命令: %s", format_git_command(["merge", "--abort"], local_dir))
+                run_git(["merge", "--abort"], local_dir, check=False)
+            return False, before_sha, None
+
+        after_sha = run_git(["rev-parse", "HEAD"], local_dir).stdout.strip()
+        logging.info("[%s] 合并成功: %s", conf["name"], target)
+
+        if conf["push_on_success"]:
+            if dry_run:
+                logging.info("[演练] 将执行: git push %s %s", remote, target)
+                return True, before_sha, after_sha
+            logging.info("执行命令: %s", format_git_command(["push", remote, target], local_dir))
+            push = run_git(["push", remote, target], local_dir, check=False)
+            if push.returncode != 0:
+                logging.error("[%s] 推送失败:\n%s", conf["name"], push.stdout)
+                protected_reject = (
+                    "protected branches" in push.stdout
+                    or "pre-receive hook declined" in push.stdout
+                    or "remote rejected" in push.stdout
+                )
+                if protected_reject:
+                    try:
+                        result = merge_via_gitlab_mr(
+                            conf, local_dir, remote, source, target, before_sha, after_sha)
+                        if result.get("merged"):
+                            return True, before_sha, after_sha
+                        logging.warning("[%s] 已改为 MR 合并，请在 GitLab 处理: %s",
+                                        conf["name"], result.get("mr_url") or result.get("temp_branch"))
+                        return True, before_sha, before_sha
+                    except Exception as e:
+                        logging.error("[%s] 创建/合并 MR 失败: %s", conf["name"], e)
+                return False, before_sha, after_sha
+            logging.info("[%s] 已推送: %s -> %s/%s", conf["name"], target, remote, target)
+
+        return True, before_sha, after_sha
+    finally:
+        restore_branch(local_dir, original_branch)
 
 
 def process_project(conf, dry_run):
@@ -1143,6 +1286,33 @@ def count_commits(conf, branch):
         return 0
 
 
+def cascade_merge_from_branch(conf, local_dir, start_branch, dry_run=False):
+    """按 target_branches 顺序，把 start_branch 逐级 merge 下去。"""
+    targets = conf.get("target_branches") or []
+    if start_branch in targets:
+        chain = targets[targets.index(start_branch) + 1:]
+    else:
+        chain = [t for t in targets if t != start_branch]
+    if not chain:
+        return []
+
+    messages = []
+    source = start_branch
+    for target in chain:
+        logging.info("[%s] Pick 后级联合并: %s -> %s", conf["name"], source, target)
+        run_git(["fetch", "--prune", conf["remote"], source, target], local_dir, check=False)
+        ok, before, after = merge_branch(conf["remote"], source, target, conf, local_dir, dry_run)
+        if not ok:
+            raise SystemExit(f"Pick 后 merge {source} -> {target} 失败")
+        if after and before and after != before:
+            messages.append(f"已 merge {source} 到 {target}")
+            source = target
+            continue
+        messages.append(f"已创建 {source} -> {target} 的 MR，等待 GitLab 合并")
+        break
+    return messages
+
+
 def cherry_pick_commits(conf, commits, target_branch, dry_run=False):
     """把选中的 commit 依次 cherry-pick 到指定目标分支，成功则推送。返回提示文案。"""
     local_dir = ensure_repo(conf, check_branches=False)
@@ -1152,6 +1322,7 @@ def cherry_pick_commits(conf, commits, target_branch, dry_run=False):
     try:
         if not checkout_target(remote, target_branch, str(local_dir)):
             raise SystemExit(f"目标分支 {target_branch} 工作区不干净，请先清理")
+        before_sha = run_git(["rev-parse", "HEAD"], str(local_dir)).stdout.strip()
 
         if dry_run:
             logging.info("[演练] 将执行: git cherry-pick %s", " ".join(commits))
@@ -1167,12 +1338,40 @@ def cherry_pick_commits(conf, commits, target_branch, dry_run=False):
                 raise SystemExit(f"cherry-pick {sha[:8]} 失败/冲突: {proc.stdout.strip()}")
             picked.append(sha)
 
+        after_sha = run_git(["rev-parse", "HEAD"], str(local_dir)).stdout.strip()
+        pick_ready_for_cascade = True
+        messages = [f"已成功 pick {len(picked)} 个 commit 到 {target_branch}"]
         if conf["push_on_success"]:
             logging.info("执行命令: %s", format_git_command(["push", remote, target_branch], local_dir))
             push = run_git(["push", remote, target_branch], str(local_dir), check=False)
             if push.returncode != 0:
-                raise SystemExit(f"推送失败: {push.stdout.strip()}")
-        return f"已成功 pick {len(picked)} 个 commit 到 {target_branch}"
+                protected_reject = (
+                    "protected branches" in push.stdout
+                    or "pre-receive hook declined" in push.stdout
+                    or "remote rejected" in push.stdout
+                )
+                if not protected_reject:
+                    raise SystemExit(f"推送失败: {push.stdout.strip()}")
+                try:
+                    result = merge_via_gitlab_mr(
+                        conf, str(local_dir), remote,
+                        conf.get("source_branch") or "cherry-pick",
+                        target_branch, before_sha, after_sha)
+                    if result.get("merged"):
+                        messages.append("已通过 MR 合并到保护分支")
+                    else:
+                        pick_ready_for_cascade = False
+                        messages.append(
+                            f"已创建 MR，等待 GitLab 合并: {result.get('mr_url') or result.get('temp_branch')}")
+                except Exception as e:
+                    raise SystemExit(f"推送失败: {push.stdout.strip()}\n创建/合并 MR 失败: {e}") from e
+        else:
+            pick_ready_for_cascade = False
+            messages.append("未推送到远端，跳过后续级联合并")
+        if pick_ready_for_cascade:
+            run_git(["fetch", "--prune", remote, target_branch], str(local_dir), check=False)
+            messages.extend(cascade_merge_from_branch(conf, str(local_dir), target_branch, dry_run))
+        return "；".join(messages)
     finally:
         restore_branch(str(local_dir), original_branch)
 

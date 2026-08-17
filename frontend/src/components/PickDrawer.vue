@@ -127,11 +127,22 @@
 
       <!-- 底部操作 -->
       <div class="pk-foot">
-        <div class="pk-pick-target">
-          <span>Pick 到</span>
-          <el-select v-model="store.pickTarget" placeholder="选择目标分支">
-            <el-option v-for="t in store.targets" :key="t" :label="t" :value="t" />
-          </el-select>
+        <div class="pk-foot-main">
+          <div class="pk-pick-target">
+            <span>Pick 到</span>
+            <el-select v-model="store.pickTarget" filterable placeholder="选择 Pick 目标分支">
+              <el-option v-for="t in store.pickTargets" :key="t" :label="t" :value="t" />
+            </el-select>
+          </div>
+          <div v-if="store.pickTarget" class="pk-chain">
+            <span class="pk-chain-node">{{ store.sourceBranch || '源分支' }}</span>
+            <span class="pk-chain-op">Pick</span>
+            <span class="pk-chain-node active">{{ store.pickTarget }}</span>
+            <template v-for="t in store.pickCascade" :key="t">
+              <span class="pk-chain-op">Merge</span>
+              <span class="pk-chain-node">{{ t }}</span>
+            </template>
+          </div>
         </div>
         <el-button
           class="pk-pick-btn"
@@ -140,7 +151,7 @@
           :disabled="!store.selectedCount || !store.pickTarget"
           @click="store.doPick()"
         >
-          Pick{{ store.selectedCount ? ` ${store.selectedCount} 个` : '' }} commit
+          Pick{{ store.selectedCount ? ` ${store.selectedCount} 个` : '' }} commit{{ store.pickCascade.length ? ' 并级联合并' : '' }}
         </el-button>
       </div>
     </div>
@@ -148,7 +159,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { Close, Loading, Magnet, Search } from '@element-plus/icons-vue'
 import { useProjectsStore } from '../stores/projects'
 import { usePickStore } from '../stores/pick'
@@ -164,9 +175,16 @@ const branches = computed(() => {
   return p ? p.branches : []
 })
 
+watch(branches, (items) => {
+  if (!store.ctx) return
+  store.ctx.branches = [...(items || [])]
+  store.refreshPickTarget()
+})
+
 function onSourceChange() {
   store.selected = []
   store.searchKw = ''
+  store.refreshPickTarget()
   store.loadCommits(true)
 }
 
