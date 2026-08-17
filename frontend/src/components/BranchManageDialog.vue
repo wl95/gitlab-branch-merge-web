@@ -280,6 +280,34 @@
           </div>
         </div>
       </div>
+
+      <!-- 撤回本次操作 -->
+      <div v-if="lastUndo" class="bm-undo">
+        <el-button type="warning" plain :loading="undoing" @click="undoRun">
+          <el-icon style="margin-right: 4px"><RefreshLeft /></el-icon>
+          撤回本次{{ actionLabel }}操作
+        </el-button>
+        <span class="bm-undo-note">
+          将自动执行逆向操作（创建→删除、删除→恢复原提交、重命名→改回原名），并实时报告结果
+        </span>
+      </div>
+      <div v-if="undoResults.length" class="bm-results">
+        <div class="bm-res-head">
+          撤回结果
+          <span class="bm-ok">成功 {{ undoOkCount }}</span>
+          <span class="bm-fail">失败 {{ undoFailCount }}</span>
+        </div>
+        <div class="bm-res-list">
+          <div v-for="(r, i) in undoResults" :key="i" class="bm-res" :class="r.ok ? 'ok' : 'fail'">
+            <el-icon class="bm-res-ico">
+              <CircleCheckFilled v-if="r.ok" />
+              <CircleCloseFilled v-else />
+            </el-icon>
+            <span class="bm-res-name">{{ r.name }}</span>
+            <span class="bm-res-msg">{{ r.ok ? r.message : r.error }}</span>
+          </div>
+        </div>
+      </div>
     </div>
 
     <el-dialog
@@ -612,6 +640,11 @@ const runLabel = computed(() => {
 
 const okCount = computed(() => results.value.filter((r) => r.ok).length)
 const failCount = computed(() => results.value.length - okCount.value)
+const undoOkCount = computed(() => undoResults.value.filter((r) => r.ok).length)
+const undoFailCount = computed(() => undoResults.value.length - undoOkCount.value)
+const actionLabel = computed(
+  () => ({ create: '创建', delete: '删除', rename: '重命名' })[lastUndo.value?.action] || ''
+)
 
 // 与 merge store 保持一致的 payload 序列化：去掉前端临时字段
 function serialize(p) {
@@ -657,6 +690,7 @@ async function run() {
       ElMessage.warning('请填写要删除的分支名')
       return
     }
+    const nameList = dnames.map((n) => `「${n}」`).join('、')
     try {
       await ElMessageBox.confirm(
         `将删除所选 ${list.length} 个工程上的 ${names.length} 个远程分支，确定继续？`,
@@ -708,6 +742,7 @@ async function run() {
 
   running.value = true
   results.value = []
+  undoResults.value = []
   try {
     await startBranchLogPolling()
     const r = await call()
@@ -1047,6 +1082,22 @@ async function undoBranchOperation() {
   color: var(--text);
   background: var(--panel2);
   border-bottom: 1px solid var(--border);
+}
+.bm-undo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  border: 1px solid rgba(230, 162, 60, 0.35);
+  border-radius: 8px;
+  background: rgba(230, 162, 60, 0.06);
+}
+.bm-undo-note {
+  font-size: 12px;
+  color: var(--muted);
+  flex: 1;
+  min-width: 220px;
 }
 .bm-ok {
   font-size: 12px;

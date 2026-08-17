@@ -1015,6 +1015,107 @@ def undo_merge_item(item):
             + ("，远程已强制还原" if pushed else ""))
 
 
+# ------------------------------------------- 分支操作（创建/删除/重命名）撤回
+
+# 撤回记录文件路径，由 webapp 启动时设置（gm.BRANCH_UNDO_FILE = ...）
+BRANCH_UNDO_FILE = None
+
+
+def save_branch_undo_record(action, desc, items):
+    """保存一次分支操作（创建/删除/重命名）的撤回记录，返回 undo_id。
+
+    items 为成功执行的逆向信息列表；最近 20 条以内，新记录插到最前。
+    """
+    import time as _time
+    import uuid
+    if not items or BRANCH_UNDO_FILE is None:
+        return None
+    record = {
+        "id": _time.strftime("%Y%m%d%H%M%S") + "-" + uuid.uuid4().hex[:6],
+        "at": _time.strftime("%Y-%m-%d %H:%M:%S"),
+        "action": action,
+        "desc": desc,
+        "items": items,
+    }
+    records = load_branch_undo()
+    records.insert(0, record)
+    with open(BRANCH_UNDO_FILE, "w", encoding="utf-8") as f:
+        json.dump(records[:20], f, ensure_ascii=False, indent=2)
+    return record["id"]
+
+
+def load_branch_undo():
+    """返回分支操作撤回记录列表（新→旧）。"""
+    if BRANCH_UNDO_FILE is None or not Path(BRANCH_UNDO_FILE).exists():
+        return []
+    try:
+        with open(BRANCH_UNDO_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, list) else []
+    except (OSError, ValueError):
+        return []
+
+
+def remove_branch_undo(undo_id):
+    """按 id 移除撤回记录，返回是否移除成功。"""
+    records = load_branch_undo()
+    kept = [r for r in records if r.get("id") != undo_id]
+    if len(kept) == len(records):
+        return False
+    if BRANCH_UNDO_FILE is not None:
+        with open(BRANCH_UNDO_FILE, "w", encoding="utf-8") as f:
+            json.dump(kept, f, ensure_ascii=False, indent=2)
+    return True
+
+
+def branch_sha(conf, branch, remote=None):
+    """返回远程分支的 commit SHA（删除前快照用）；不存在返回 None。"""
+    remote = remote or conf.get("remote") or "origin"
+    local_dir = ensure_repo(conf, check_branches=False)
+    sha = _resolve_branch_ref(local_dir, branch, remote)
+    return sha or None
+
+
+def undo_branch_item(item):
+    """执行单条分支操作的逆向操作，返回描述文本；失败抛 RuntimeError。"""
+    action = item.get("action")
+    conf = item.get("project") or {}
+    branch = item.get("branch") or ""
+    remote = item.get("remote") or conf.get("remote") or "origin"
+    if action == "create":
+        # 创建 → 删除该分支
+        delete_branch(conf, branch, remote)
+        return f"已删除分支 {branch}（撤回创建）"
+    if action == "delete":
+        # 删除 → 用删除前 SHA 重建分支
+        sha = item.get("sha")
+        if not sha:
+            raise RuntimeError(f"缺少删除前 SHA，无法恢复分支 {branch}")
+        local_dir = ensure_repo(conf, check_branches=False)
+        heads = _remote_heads(local_dir, remote)
+        if branch in heads:
+            raise RuntimeError(f"分支已存在，无法恢复: {branch}")
+        push = run_git(["push", remote, f"{sha}:refs/heads/{branch}"],
+                       local_dir, check=False)
+        if push.returncode != 0:
+            raise RuntimeError(f"恢复分支失败: {push.stdout.strip()}")
+        # 本地同名分支一并恢复（当前未检出时）
+        cur = run_git(["rev-parse", "--abbrev-ref", "HEAD"],
+                      local_dir, check=False).stdout.strip()
+        if cur != branch:
+            run_git(["branch", branch, sha], local_dir, check=False)
+        return f"已恢复分支 {branch} → {sha[:8]}（撤回删除）"
+    if action == "rename":
+        # 重命名 → 把新名改回原名
+        old = item.get("old_name") or ""
+        new = branch
+        if not old or not new:
+            raise RuntimeError("缺少重命名信息，无法撤回")
+        rename_branch(conf, new, old, remote)
+        return f"已将分支 {new} 重命名回 {old}（撤回重命名）"
+    raise RuntimeError(f"未知操作类型: {action}")
+
+
 # ----------------------------------------------- 范围 commits & 单 commit diff
 
 

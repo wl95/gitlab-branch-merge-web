@@ -1,0 +1,102 @@
+[
+  {
+    "id": "20260814175753-fe3585",
+    "at": "2026-08-14 17:57:53",
+    "action": "delete",
+    "desc": "删除分支：jushiv6-hotfix、jushiv6-master",
+    "items": [
+      {
+        "action": "delete",
+        "project": {
+          "ssh_port": 22,
+          "local_dir_base": "./repos",
+          "remote": "origin",
+          "no_ff": true,
+          "push_on_success": true,
+          "stop_on_conflict": true,
+          "log_level": "INFO",
+          "name": "v6-front-sys",
+          "ssh_host": "ssh://git@38.76.216.46:42221/cuigm/taxmpv5-front-sys.git",
+          "project_path": "cuigm/taxmpv5-front-sys",
+          "source_branch": "v6-feature-20260630",
+          "local_dir": "/Users/wangliang/Documents/life/20260812162510/repos/cuigm__taxmpv5-front-sys",
+          "target_branches": [
+            "jushiv6-develop"
+          ]
+        },
+        "branch": "jushiv6-hotfix",
+        "sha": "bf11ac590799b8fac2e726732b0b135358c995b8",
+        "remote": "origin"
+      },
+      {
+        "action": "delete",
+        "project": {
+          "ssh_port": 22,
+          "local_dir_base": "./repos",
+          "remote": "origin",
+          "no_ff": true,
+          "push_on_success": true,
+          "stop_on_conflict": true,
+          "log_level": "INFO",
+          "name": "v6-front-stage",
+          "ssh_host": "ssh://git@38.76.216.46:42221/cuigm/taxmpv5-front-stage.git",
+          "project_path": "cuigm/taxmpv5-front-stage",
+          "source_branch": "v6-feature-20260630",
+          "local_dir": "/Users/wangliang/Documents/yuanian/v6/front/v6-front-stage",
+          "target_branches": [
+            "jushiv6-develop"
+          ]
+        },
+        "branch": "jushiv6-hotfix",
+        "sha": "eb999c6b1c3d8ab2089e0b023710426a819d9327",
+        "remote": "origin"
+      },
+      {
+        "action": "delete",
+        "project": {
+          "ssh_port": 22,
+          "local_dir_base": "./repos",
+          "remote": "origin",
+          "no_ff": true,
+          "push_on_success": true,
+          "stop_on_conflict": true,
+          "log_level": "INFO",
+          "name": "v6-front-sys",
+          "ssh_host": "ssh://git@38.76.216.46:42221/cuigm/taxmpv5-front-sys.git",
+          "project_path": "cuigm/taxmpv5-front-sys",
+          "source_branch": "v6-feature-20260630",
+          "local_dir": "/Users/wangliang/Documents/life/20260812162510/repos/cuigm__taxmpv5-front-sys",
+          "target_branches": [
+            "jushiv6-develop"
+          ]
+        },
+        "branch": "jushiv6-master",
+        "sha": "bf11ac590799b8fac2e726732b0b135358c995b8",
+        "remote": "origin"
+      },
+      {
+        "action": "delete",
+        "project": {
+          "ssh_port": 22,
+          "local_dir_base": "./repos",
+          "remote": "origin",
+          "no_ff": true,
+          "push_on_success": true,
+          "stop_on_conflict": true,
+          "log_level": "INFO",
+          "name": "v6-front-stage",
+          "ssh_host": "ssh://git@38.76.216.46:42221/cuigm/taxmpv5-front-stage.git",
+          "project_path": "cuigm/taxmpv5-front-stage",
+          "source_branch": "v6-feature-20260630",
+          "local_dir": "/Users/wangliang/Documents/yuanian/v6/front/v6-front-stage",
+          "target_branches": [
+            "jushiv6-develop"
+          ]
+        },
+        "branch": "jushiv6-master",
+        "sha": "eb999c6b1c3d8ab2089e0b023710426a819d9327",
+        "remote": "origin"
+      }
+    ]
+  }
+]

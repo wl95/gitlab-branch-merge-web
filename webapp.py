@@ -58,6 +58,8 @@ from utils.runtime_store import (
     suggest_profile_name,
 )
 gm.UNDO_FILE = str(UNDO_FILE)
+BRANCH_UNDO_FILE = BASE_DIR / "branch_undo.json"
+gm.BRANCH_UNDO_FILE = str(BRANCH_UNDO_FILE)
 
 
 STATE = {"busy": False, "lock": threading.Lock()}
@@ -905,6 +907,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/clear":
             log_store.clear()
             self._send_json({"ok": True})
+        elif path == "/api/branch/undo":
+            # 查询分支操作（创建/删除/重命名）的撤回记录列表
+            self._send_json({"ok": True, "records": gm.load_branch_undo()})
         elif path == "/api/merge/undo":
             # 查询最近一次合并的可撤回记录
             data = gm.load_undo()
