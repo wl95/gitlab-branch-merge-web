@@ -10,6 +10,9 @@
       <el-button :icon="Operation" @click="branchManageVisible = true">
         批量分支管理
       </el-button>
+      <el-button :icon="WarningFilled" @click="dangerLogVisible = true">
+        危险日志
+      </el-button>
       <el-button type="warning" :loading="saving" :disabled="merge.busy" @click="saveAll">
         保存全部
       </el-button>
@@ -17,30 +20,29 @@
   </header>
 
   <BranchManageDialog v-model="branchManageVisible" />
+  <DangerLogDialog v-model="dangerLogVisible" />
 </template>
 
 <script setup>
 import { ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Plus, Operation } from '@element-plus/icons-vue'
+import { Plus, Operation, WarningFilled } from '@element-plus/icons-vue'
 import { useProjectsStore } from '../stores/projects'
 import { useMergeStore } from '../stores/merge'
 import BranchManageDialog from './BranchManageDialog.vue'
+import DangerLogDialog from './DangerLogDialog.vue'
 
 const projects = useProjectsStore()
 const merge = useMergeStore()
 const saving = ref(false)
 const branchManageVisible = ref(false)
+const dangerLogVisible = ref(false)
 
 function addProject() {
   projects.addProject()
 }
 
 async function saveAll() {
-  if (!projects.count) {
-    ElMessage.warning('暂无可保存的工程')
-    return
-  }
   saving.value = true
   try {
     await projects.save()

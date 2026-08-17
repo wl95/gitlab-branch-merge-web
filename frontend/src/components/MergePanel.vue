@@ -4,8 +4,8 @@
       <h2>⚡ 执行合并</h2>
       <div class="grow"></div>
       <div class="exec-status">
-        <span class="status-dot" :class="{ running: merge.busy }"></span>
-        <span>{{ merge.busy ? '任务运行中' : '空闲' }}</span>
+        <span class="status-dot" :class="{ running: merge.busy || merge.commandStreaming }"></span>
+        <span>{{ merge.busy ? '任务运行中' : merge.commandStreaming ? '命令执行中' : '空闲' }}</span>
       </div>
       <el-button text circle title="折叠 / 展开" @click="merge.toggleCollapsed">
         <el-icon :style="{ transform: merge.collapsed ? 'rotate(180deg)' : 'none', transition: 'transform .2s' }">
@@ -17,35 +17,60 @@
     <div v-show="!merge.collapsed" class="exec-body">
       <div class="merge-queue-wrap">
         <div class="merge-queue-head">
-          <span class="queue-title">待合并工程</span>
+          <div>
+            <span class="queue-title">待合并工程</span>
+            <span class="queue-subtitle">已选择 {{ queue.length }} 个工程 · 可执行 {{ runnableCount }} 个工程</span>
+          </div>
           <span class="queue-count">{{ queue.length }}</span>
         </div>
-        <div v-if="queue.length" v-for="x in queue" :key="x.id" class="qitem" :class="{ warn: !x.valid }">
-          <div class="qhead">
-            <div class="qname">{{ x.name || x.ssh_host }}</div>
-            <el-button
-              v-if="x.valid"
-              size="small"
-              text
-              type="primary"
-              :icon="ChatLineRound"
-              @click="viewCommits(x)"
-              title="查看本次将合并的 commit 及每个 commit 的代码改动"
-            >
-              查看 commit
-            </el-button>
+        <template v-if="queue.length">
+          <div
+            v-for="x in queue"
+            :key="x.id"
+            class="qitem"
+            :class="{ warn: !x.valid || x.commitError, empty: x.noContent }"
+            :title="x.noContent ? '没有合并内容，开始合并时不会参与' : ''"
+          >
+            <div class="qhead">
+              <div class="qname">{{ x.name || x.ssh_host }}</div>
+              <el-button
+                v-if="x.valid && x.hasContent"
+                size="small"
+                text
+                type="primary"
+                :icon="ChatLineRound"
+                @click="viewCommits(x)"
+                title="查看本次将合并的 commit 及每个 commit 的代码改动"
+              >
+                查看 commit
+              </el-button>
+            </div>
+            <div class="qflow">
+              <span class="qsource">{{ x.source_branch || '?' }}</span>
+              <span class="qarrow">→</span>
+              <template v-if="x.target_branches.length">
+                <span
+                  v-for="t in x.target_branches"
+                  :key="t"
+                  class="qtarget"
+                  :class="{ empty: x.targets[t] === 0, checking: x.countLoading }"
+                >
+                  {{ t }}
+                  <small v-if="x.countLoading">检测中</small>
+                  <small v-else-if="typeof x.targets[t] === 'number'">{{ x.targets[t] }} commit</small>
+                </span>
+              </template>
+              <span v-else class="qtarget">?目标</span>
+            </div>
+            <div v-if="!x.valid" class="qwarn">⚠ 缺少：{{ missingText(x) }}</div>
+            <div v-else-if="x.commitError" class="qwarn">⚠ commit 数量检测失败：{{ x.commitError }}</div>
+            <div v-else-if="x.noContent" class="qwarn">没有合并内容，开始合并时不参与</div>
+            <div v-else-if="x.hasContent && x.zeroTargets.length" class="qwarn">
+              已置灰 {{ x.zeroTargets.length }} 个无合并内容的目标分支
+            </div>
           </div>
-          <div class="qflow">
-            <span class="qsource">{{ x.source_branch || '?' }}</span>
-            <span class="qarrow">→</span>
-            <template v-if="x.target_branches.length">
-              <span v-for="t in x.target_branches" :key="t" class="qtarget">{{ t }}</span>
-            </template>
-            <span v-else class="qtarget">?目标</span>
-          </div>
-          <div v-if="!x.valid" class="qwarn">⚠ 缺少：{{ missingText(x) }}</div>
-        </div>
-        <div v-if="!queue.length" class="queue-empty">暂未勾选「参与合并」的工程</div>
+        </template>
+        <div v-else class="queue-empty">暂未勾选「参与合并」的工程</div>
       </div>
 
       <div ref="logEl" class="log">
@@ -102,8 +127,13 @@
 
       <div class="exec-foot">
         <el-button :disabled="merge.busy" @click="clearLog">清空日志</el-button>
-        <el-button type="primary" :loading="merge.busy" @click="merge.runMerge()">
-          {{ merge.busy ? '合并进行中…' : '开始合并' }}
+        <el-button
+          type="primary"
+          :loading="merge.busy"
+          :disabled="!runnableCount"
+          @click="merge.runMerge()"
+        >
+          {{ merge.busy ? '合并进行中…' : '执行合并' }}
         </el-button>
       </div>
     </div>
@@ -134,7 +164,19 @@ const queue = computed(() =>
     source_branch: p.source_branch,
     target_branches: p.target_branches,
     valid: !!(p.ssh_host && p.source_branch && p.target_branches.length),
+    countLoading: !!merge.commitCounts[p.id]?.loading,
+    targets: merge.commitCounts[p.id]?.targets || {},
+    commitError: merge.commitCounts[p.id]?.error || '',
+    zeroTargets: (p.target_branches || []).filter((t) => merge.commitCounts[p.id]?.targets?.[t] === 0),
+    hasContent: (p.target_branches || []).some((t) => (merge.commitCounts[p.id]?.targets?.[t] || 0) > 0),
+    noContent: !merge.commitCounts[p.id]?.loading &&
+      Object.keys(merge.commitCounts[p.id]?.targets || {}).length > 0 &&
+      (p.target_branches || []).every((t) => merge.commitCounts[p.id]?.targets?.[t] === 0),
   }))
+)
+
+const runnableCount = computed(() =>
+  queue.value.filter((x) => x.valid && !x.noContent && !x.countLoading).length
 )
 
 const totalCommits = computed(() => {
@@ -156,6 +198,19 @@ watch(
       for (const k of Object.keys(openMap)) delete openMap[k]
     }
   }
+)
+
+watch(
+  () => projects.checkedProjects.map((p) => [
+    p.id,
+    p.local_dir,
+    p.source_branch,
+    (p.target_branches || []).join(','),
+  ].join('|')).join('::'),
+  () => {
+    projects.checkedProjects.forEach((p) => merge.refreshCommitCount(p))
+  },
+  { immediate: true }
 )
 
 function missingText(x) {

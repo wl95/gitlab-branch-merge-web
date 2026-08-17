@@ -6,6 +6,9 @@ __pycache__/
 # ===== 本地配置（含内网 SSH 地址 / 本地路径，不入库）=====
 config.ini
 profiles.json
+danger_audit_log.json
+branch_op_undo.json
+merge_undo.json
 
 # ===== 前端构建产物与依赖（clone 后 npm install && npm run build 生成）=====
 dist/

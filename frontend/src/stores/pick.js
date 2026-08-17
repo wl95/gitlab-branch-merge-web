@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 import { useProjectsStore } from './projects'
+import { useMergeStore } from './merge'
 
 const PAGE_SIZE = 50
 
@@ -41,12 +42,14 @@ export const usePickStore = defineStore('pick', {
   actions: {
     _ctxPayload() {
       const c = this.ctx
+      const projectsStore = useProjectsStore()
       return {
         ssh_host: c.ssh_host,
         project_path: c.project_path,
         local_dir: c.local_dir,
         source_branch: c.source_branch,
         target_branches: c.target_branches,
+        global: { ...projectsStore.global },
       }
     },
 
@@ -104,12 +107,13 @@ export const usePickStore = defineStore('pick', {
         this.loadingMore = true
       }
       try {
-        const r = await api.commits({
+        const merge = useMergeStore()
+        const r = await merge.runWithCommandLog(() => api.commits({
           ...this._ctxPayload(),
           branch: this.sourceBranch,
           page: this.page,
           page_size: PAGE_SIZE,
-        })
+        }), { reveal: false })
         this.commits = reset ? r.commits || [] : this.commits.concat(r.commits || [])
         this.total = r.total || 0
         this.hasMore = !!r.has_more
@@ -142,12 +146,13 @@ export const usePickStore = defineStore('pick', {
       this.targetLoading = true
       this.targetCommits = []
       try {
-        const r = await api.commits({
+        const merge = useMergeStore()
+        const r = await merge.runWithCommandLog(() => api.commits({
           ...this._ctxPayload(),
           branch,
           page: 1,
           page_size: PAGE_SIZE,
-        })
+        }), { reveal: false })
         this.targetCommits = r.commits || []
       } catch (e) {
         this.targetCommits = []
@@ -174,11 +179,12 @@ export const usePickStore = defineStore('pick', {
       }
       this.picking = true
       try {
-        const r = await api.cherryPick({
+        const merge = useMergeStore()
+        const r = await merge.runWithCommandLog(() => api.cherryPick({
           ...this._ctxPayload(),
           target_branch: this.pickTarget,
           commits: this.selected,
-        })
+        }), { reveal: false })
         ElMessage.success('✔ ' + (r.message || 'Pick 成功'))
         this.close()
       } catch (e) {

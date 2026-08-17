@@ -1,8 +1,27 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import {
+  loadSshPresets,
+  normalizeVarName,
+  sshVarsFromPresets,
+} from './sshPresets'
 
 let uid = 1
+
+function normalizeGlobal(g = {}) {
+  const sshIp = g.ssh_ip || '38.76.216.46'
+  const sshPort = g.ssh_port || '42221'
+  return {
+    ssh_host: g.ssh_host || '',
+    ssh_ip: sshIp,
+    ssh_port: sshPort,
+    ssh_origin: g.ssh_origin || `ssh://git@${sshIp}:${sshPort}`,
+    ssh_vars: g.ssh_vars && typeof g.ssh_vars === 'object' && !Array.isArray(g.ssh_vars) ? g.ssh_vars : {},
+    source_branch: g.source_branch || '',
+    target_branches: Array.isArray(g.target_branches) ? g.target_branches : [],
+  }
+}
 
 function blankProject() {
   return {
@@ -22,7 +41,7 @@ function blankProject() {
 export const useProjectsStore = defineStore('projects', {
   state: () => ({
     projects: [],
-    global: { ssh_host: '', source_branch: '', target_branches: [] },
+    global: normalizeGlobal(),
     globalBranches: [],
     globalBranchesLoading: false, // 全局分支是否正在加载
     // ⚠ 必须与 actions.scanFolder 区分开（Pinia actions 会覆盖同名 state），
@@ -41,9 +60,20 @@ export const useProjectsStore = defineStore('projects', {
     scanResult: null, // { repos: [{host, name, project_path, path}], warnings: [...] }
     scanLoading: false,
     scanShow: false,
+    gitlabUrl: localStorage.getItem('gm_gitlab_url') || 'http://38.76.216.46:4481/dashboard/projects',
+    gitlabToken: '',
+    gitlabScope: 'membership',
+    gitlabIncludeBranches: false,
+    gitlabLoading: false,
+    gitlabDiagnosing: false,
+    gitlabShow: false,
+    gitlabResult: null, // { projects: [{name, ssh_host, project_path, branches}], warnings: [] }
+    gitlabDiagnosis: null,
     lastAddedId: null, // 最近新增工程 id，用于自动聚焦
     profiles: [], // 已保存的配置方案摘要列表 [{name, updated, project_count, target_branches}]
     profilesLoading: false,
+    sshPresets: loadSshPresets(),
+    activeSshPreset: localStorage.getItem('gm_active_ssh_preset') || 'default-38',
   }),
 
   getters: {
@@ -94,6 +124,11 @@ export const useProjectsStore = defineStore('projects', {
       if (data.ssh_host) p.ssh_host = data.ssh_host
       if (data.project_path) p.project_path = data.project_path
       if (data.local_dir) p.local_dir = data.local_dir
+      if (data.gitlab_project_id) p.gitlab_project_id = data.gitlab_project_id
+      if (data.gitlab_token) p.gitlab_token = data.gitlab_token
+      if (data.gitlab_url) p.gitlab_url = data.gitlab_url
+      if (data.gitlab_api_version) p.gitlab_api_version = data.gitlab_api_version
+      if (data.gitlab_token_in_query !== undefined) p.gitlab_token_in_query = data.gitlab_token_in_query
       this.projects.push(p)
       this.lastAddedId = p.id
       return p
@@ -101,7 +136,39 @@ export const useProjectsStore = defineStore('projects', {
 
     removeProject(id) {
       const i = this.projects.findIndex((p) => p.id === id)
-      if (i >= 0) this.projects.splice(i, 1)
+      if (i < 0) return null
+      const [removed] = this.projects.splice(i, 1)
+      return removed
+    },
+
+    setAllChecked(checked) {
+      this.projects.forEach((p) => {
+        p.checked = checked
+      })
+    },
+
+    removeCheckedProjects() {
+      const removed = this.projects.filter((p) => p.checked)
+      if (!removed.length) return []
+      this.projects = this.projects.filter((p) => !p.checked)
+      return removed
+    },
+
+    restoreProjects(list) {
+      const restored = []
+      ;(list || []).forEach((data) => {
+        const p = this.addProject({
+          name: data.name || '',
+          ssh_host: data.ssh_host || '',
+          project_path: data.project_path || '',
+          local_dir: data.local_dir || '',
+        })
+        p.source_branch = data.source_branch || ''
+        p.target_branches = Array.isArray(data.target_branches) ? [...data.target_branches] : []
+        p.checked = false
+        restored.push(p)
+      })
+      return restored
     },
 
     setBranches(id, branches) {
@@ -109,22 +176,45 @@ export const useProjectsStore = defineStore('projects', {
       if (p) p.branches = Array.isArray(branches) ? branches : []
     },
 
+    applyDefaultBranches(p, currentBranch = '') {
+      if (!p) return
+      if (!p.source_branch) {
+        const source = (this.global.source_branch || currentBranch || '').trim()
+        if (source) p.source_branch = source
+      }
+      if ((!p.target_branches || !p.target_branches.length) && this.global.target_branches.length) {
+        p.target_branches = [...this.global.target_branches]
+      }
+    },
+
     // 加载单个工程的分支（用于加入/修改 ssh_host 后自动触发）。
     // 静默调用：失败不弹错（避免用户输入过程中频繁弹错误），由卡片显示加载态。
     async loadBranchesFor(id) {
       const p = this.projects.find((x) => x.id === id)
       if (!p) return
-      if (!p.ssh_host || !p.ssh_host.trim()) return
+      const hasGitlabApi = p.gitlab_project_id && p.gitlab_token && p.gitlab_url
+      if (!hasGitlabApi && (!p.ssh_host || !p.ssh_host.trim())) return
       if (p.branchesLoading) return // 已在加载中，跳过避免重复请求
       p.branchesLoading = true
       try {
-        const branches = await this.loadBranches({
+        const data = await this.loadBranchesWithCurrent({
           ssh_host: p.ssh_host,
           project_path: p.project_path,
+          local_dir: p.local_dir,
+          gitlab_project_id: p.gitlab_project_id,
+          gitlab_token: p.gitlab_token,
+          gitlab_url: p.gitlab_url,
+          gitlab_api_version: p.gitlab_api_version,
+          gitlab_token_in_query: p.gitlab_token_in_query,
+          global: { ...this.global },
         })
-        this.setBranches(id, branches)
+        this.setBranches(id, data.branches)
+        this.applyDefaultBranches(p, data.currentBranch)
+        return data.branches
       } catch (e) {
         console.error(`自动加载分支失败（${p.ssh_host}）：`, e)
+        if (p.gitlab_project_id) ElMessage.warning(`工程「${p.name || p.project_path || p.ssh_host}」分支加载失败：${e.message}`)
+        return []
       } finally {
         p.branchesLoading = false
       }
@@ -140,11 +230,8 @@ export const useProjectsStore = defineStore('projects', {
         branchesLoading: false,
       }))
       this.projects = this._dedupeProjects(mapped)
-      this.global = st.global || {
-        ssh_host: '',
-        source_branch: '',
-        target_branches: [],
-      }
+      this.global = normalizeGlobal(st.global)
+      this.syncSshVarsFromPresets()
       return st
     },
 
@@ -156,6 +243,7 @@ export const useProjectsStore = defineStore('projects', {
         try {
           this.globalBranches = await this.loadBranches({
             ssh_host: this.global.ssh_host,
+            global: { ...this.global },
           })
         } catch (e) {
           console.error('自动加载全局分支失败：', e)
@@ -169,11 +257,14 @@ export const useProjectsStore = defineStore('projects', {
         .map(async (p) => {
           p.branchesLoading = true
           try {
-            const branches = await this.loadBranches({
+            const data = await this.loadBranchesWithCurrent({
               ssh_host: p.ssh_host,
               project_path: p.project_path,
+              local_dir: p.local_dir,
+              global: { ...this.global },
             })
-            this.setBranches(p.id, branches)
+            this.setBranches(p.id, data.branches)
+            this.applyDefaultBranches(p, data.currentBranch)
           } catch (e) {
             console.error(`自动加载分支失败（${p.ssh_host}）：`, e)
           } finally {
@@ -185,6 +276,7 @@ export const useProjectsStore = defineStore('projects', {
     },
 
     async save() {
+      this.syncSshVarsFromPresets()
       const projects = this._serializableProjects()
       const r = await api.save(projects, { ...this.global })
       // 用服务端规范化后的数据回填，保留本地 id / 勾选 / 分支缓存
@@ -199,13 +291,24 @@ export const useProjectsStore = defineStore('projects', {
           p.target_branches = n.target_branches || []
         }
       })
-      if (r.global) this.global = r.global
+      if (r.global) {
+        this.global = normalizeGlobal(r.global)
+        this.syncSshVarsFromPresets()
+      }
       return r
     },
 
     async loadBranches(payload) {
       const r = await api.branches(payload)
       return r.branches || []
+    },
+
+    async loadBranchesWithCurrent(payload) {
+      const r = await api.branches(payload)
+      return {
+        branches: r.branches || [],
+        currentBranch: r.current_branch || '',
+      }
     },
 
     async loadGlobalBranches() {
@@ -215,6 +318,7 @@ export const useProjectsStore = defineStore('projects', {
       }
       const branches = await this.loadBranches({
         ssh_host: this.global.ssh_host,
+        global: { ...this.global },
       })
       this.globalBranches = branches
       if (!branches.length) ElMessage.warning('未发现可用的分支')
@@ -258,6 +362,103 @@ export const useProjectsStore = defineStore('projects', {
       }
     },
 
+    async loadGitlabProjects() {
+      if (!this.gitlabUrl || !this.gitlabUrl.trim()) {
+        ElMessage.error('请先输入 GitLab 项目页地址')
+        return
+      }
+      if (this.gitlabScope === 'membership' && !this.gitlabToken.trim()) {
+        ElMessage.error('同步 Your projects 需要填写 GitLab Private Token')
+        return
+      }
+      this.gitlabLoading = true
+      this.gitlabShow = true
+      this.gitlabResult = null
+      const url = this.gitlabUrl.trim()
+      localStorage.setItem('gm_gitlab_url', url)
+      try {
+        const r = await api.gitlabProjects({
+          url,
+          token: this.gitlabToken.trim(),
+          scope: this.gitlabScope,
+          include_branches: this.gitlabIncludeBranches,
+        })
+        this.gitlabResult = r
+        if (!r.projects?.length) ElMessage.warning('未获取到可访问的 GitLab 工程')
+      } catch (e) {
+        this.gitlabResult = { projects: [], warnings: ['获取失败：' + e.message] }
+      } finally {
+        this.gitlabLoading = false
+      }
+    },
+
+    async diagnoseGitlabProjects() {
+      if (!this.gitlabUrl || !this.gitlabUrl.trim()) {
+        ElMessage.error('请先输入 GitLab 项目页地址')
+        return
+      }
+      this.gitlabDiagnosing = true
+      this.gitlabShow = true
+      this.gitlabDiagnosis = null
+      try {
+        this.gitlabDiagnosis = await api.gitlabDiagnose({
+          url: this.gitlabUrl.trim(),
+          token: this.gitlabToken.trim(),
+        })
+      } catch (e) {
+        this.gitlabDiagnosis = {
+          checks: [{ name: 'diagnose', ok: false, error: e.message }],
+        }
+      } finally {
+        this.gitlabDiagnosing = false
+      }
+    },
+
+    addGitlabProject(repo) {
+      if (this.projects.some((p) =>
+        (repo.ssh_host && p.ssh_host === repo.ssh_host) ||
+        (repo.project_path && p.project_path === repo.project_path)
+      )) {
+        ElMessage.warning(`工程「${repo.name || repo.project_path || repo.ssh_host}」已存在，跳过`)
+        return
+      }
+      const p = this.addProject({
+        name: repo.name || '',
+        ssh_host: repo.ssh_host || '',
+        project_path: repo.project_path || '',
+        gitlab_project_id: repo.id,
+        gitlab_token: this.gitlabToken.trim(),
+        gitlab_url: this.gitlabUrl.trim(),
+        gitlab_api_version: repo.gitlab_api_version || 'v4',
+        gitlab_token_in_query: repo.gitlab_token_in_query,
+      })
+      if (p && Array.isArray(repo.branches) && repo.branches.length) {
+        p.branches = [...repo.branches]
+        this.applyDefaultBranches(p)
+      } else if (p) {
+        this.loadBranchesFor(p.id).then((branches) => {
+          if (branches?.length) {
+            ElMessage.success(`已加载 ${branches.length} 个分支`)
+          }
+        })
+      }
+      ElMessage.success(`已加入工程「${repo.name || repo.project_path || repo.ssh_host}」`)
+    },
+
+    removeGitlabProject(repo) {
+      const p = this.projects.find((x) =>
+        (repo.ssh_host && x.ssh_host === repo.ssh_host) ||
+        (repo.project_path && x.project_path === repo.project_path)
+      )
+      if (!p) return
+      if (p.source_branch || p.target_branches.length) {
+        ElMessage.warning('该工程已配置分支，请在卡片中手动删除')
+        return
+      }
+      this.removeProject(p.id)
+      ElMessage.success('已移除该工程')
+    },
+
     addScanned(repo) {
       // 已存在则跳过（按 ssh_host 或本地路径匹配）
       if (this.projects.some((p) =>
@@ -273,6 +474,8 @@ export const useProjectsStore = defineStore('projects', {
         project_path: repo.project_path || '',
         local_dir: repo.path || '',
       })
+      p.addedFromScan = true
+      this.applyDefaultBranches(p)
       ElMessage.success(`已加入工程「${repo.name || repo.ssh_host || repo.path}」`)
       // 扫描加入的仓库自带 ssh_host，立即自动加载分支
       if (p && p.ssh_host) this.loadBranchesFor(p.id)
@@ -284,7 +487,7 @@ export const useProjectsStore = defineStore('projects', {
         (!repo.ssh_host && repo.path && x.local_dir === repo.path)
       )
       if (!p) return
-      if (p.source_branch || p.target_branches.length) {
+      if (!p.addedFromScan && (p.source_branch || p.target_branches.length)) {
         ElMessage.warning('该工程已配置分支，请在卡片中手动删除')
         return
       }
@@ -319,11 +522,80 @@ export const useProjectsStore = defineStore('projects', {
       this.applyGlobalTargets()
     },
 
+    saveSshPresets() {
+      this.syncSshVarsFromPresets()
+      localStorage.setItem('gm_ssh_presets', JSON.stringify(this.sshPresets))
+      localStorage.setItem('gm_active_ssh_preset', this.activeSshPreset)
+    },
+
+    syncSshVarsFromPresets() {
+      this.global.ssh_vars = sshVarsFromPresets(this.sshPresets)
+    },
+
+    applySshPreset(id) {
+      const preset = this.sshPresets.find((x) => x.id === id)
+      if (!preset) return
+      this.activeSshPreset = id
+      this.global.ssh_origin = preset.origin || ''
+      this.global.ssh_vars = sshVarsFromPresets(this.sshPresets)
+      this.saveSshPresets()
+      ElMessage.success(`已应用 Git 地址配置「${preset.name || preset.origin || preset.host}」`)
+    },
+
+    addSshPreset(name, host, port, origin = '', variable = 'ssh_origin') {
+      const varName = normalizeVarName(variable) || 'ssh_origin'
+      const item = {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        name: name || origin || `${host}:${port}`,
+        variable: varName,
+        host,
+        port,
+        origin: origin || (host && port ? `ssh://git@${host}:${port}` : ''),
+      }
+      this.sshPresets.push(item)
+      this.applySshPreset(item.id)
+      return item
+    },
+
+    removeSshPreset(id) {
+      if (this.sshPresets.length <= 1) {
+        ElMessage.warning('至少保留一组 Git 地址配置')
+        return
+      }
+      this.sshPresets = this.sshPresets.filter((x) => x.id !== id)
+      if (this.activeSshPreset === id) this.applySshPreset(this.sshPresets[0].id)
+      else this.saveSshPresets()
+    },
+
+    updateSshPreset(id, patch = {}) {
+      const preset = this.sshPresets.find((x) => x.id === id)
+      if (!preset) return null
+      if (patch.name !== undefined) preset.name = patch.name || preset.name
+      if (patch.variable !== undefined) preset.variable = normalizeVarName(patch.variable) || preset.variable
+      if (patch.host !== undefined) preset.host = patch.host || ''
+      if (patch.port !== undefined) preset.port = patch.port || ''
+      if (patch.origin !== undefined) preset.origin = (patch.origin || '').trim().replace(/\/+$/, '')
+      this.saveSshPresets()
+      return preset
+    },
+
     // ---------- 配置方案（profiles） ----------
 
     // 将 store 内的工程数据转换为服务端格式（去除前端临时字段）
     _serializableProjects() {
-      return this.projects.map(({ id, checked, branches, branchesLoading, ...rest }) => rest)
+      return this.projects.map(({
+        id,
+        checked,
+        branches,
+        branchesLoading,
+        addedFromScan,
+        gitlab_project_id,
+        gitlab_token,
+        gitlab_url,
+        gitlab_api_version,
+        gitlab_token_in_query,
+        ...rest
+      }) => rest)
     },
 
     async loadProfiles() {
@@ -365,11 +637,7 @@ export const useProjectsStore = defineStore('projects', {
         branchesLoading: false,
       }))
       this.projects = this._dedupeProjects(mapped)
-      this.global = r.global || {
-        ssh_host: '',
-        source_branch: '',
-        target_branches: [],
-      }
+      this.global = normalizeGlobal(r.global)
       ElMessage.success(`已切换到方案「${name}」`)
       // 切换后并发触发每个工程的分支加载，UI 立即可见
       this.projects

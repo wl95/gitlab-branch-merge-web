@@ -13,147 +13,533 @@ GitLab 分支合并 Web 管理台
 
 import argparse
 import configparser
+import html
 import json
 import logging
 import mimetypes
 import os
+import re
+import subprocess
 import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlunparse
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 import gitlab_merge as gm
-
-BASE_DIR = Path(__file__).resolve().parent
-CONFIG_FILE = BASE_DIR / "config.ini"
-PROFILES_FILE = BASE_DIR / "profiles.json"
-UNDO_FILE = BASE_DIR / "merge_undo.json"
+from utils.app_logging import log_store, setup_logging
+from utils.app_config import (
+    BASE_DIR,
+    CONFIG_FILE,
+    PROFILES_FILE,
+    UNDO_FILE,
+    load_global,
+    load_projects,
+    normalize_projects,
+    project_repo_dir,
+    resolve_config_vars,
+    save_global,
+    save_projects,
+)
+from utils.runtime_store import (
+    append_audit_log,
+    clear_branch_op_undo,
+    delete_audit_logs,
+    delete_profile,
+    load_audit_logs,
+    load_branch_op_undo,
+    load_profiles,
+    profile_summary,
+    save_branch_op_undo,
+    save_profile,
+    suggest_profile_name,
+)
 gm.UNDO_FILE = str(UNDO_FILE)
 BRANCH_UNDO_FILE = BASE_DIR / "branch_undo.json"
 gm.BRANCH_UNDO_FILE = str(BRANCH_UNDO_FILE)
 
 
-# ---------------------------------------------------------------- 日志存储
-
-class LogStore:
-    """内存日志环形存储，供前端按增量轮询。"""
-
-    def __init__(self):
-        self._lock = threading.Lock()
-        self._entries = []
-        self._next_id = 1
-
-    def add(self, text):
-        with self._lock:
-            eid = self._next_id
-            self._next_id += 1
-            self._entries.append((eid, text))
-            return eid
-
-    def since(self, n):
-        with self._lock:
-            return [(eid, t) for eid, t in self._entries if eid > n]
-
-    def clear(self):
-        with self._lock:
-            self._entries.clear()
-            self._next_id = 1
-
-
-class QueueLogHandler(logging.Handler):
-    def __init__(self, store):
-        super().__init__()
-        self._store = store
-
-    def emit(self, record):
-        try:
-            self._store.add(self.format(record))
-        except Exception:
-            pass
-
-
-log_store = LogStore()
 STATE = {"busy": False, "lock": threading.Lock()}
 
 
-def setup_logging():
-    handler = QueueLogHandler(log_store)
-    handler.setFormatter(logging.Formatter(
-        "%(asctime)s [%(levelname)s] %(message)s", "%H:%M:%S"))
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    root.addHandler(handler)
+def _commit_report(projects, start_date, end_date, authors=None):
+    author_filter = set(a for a in (authors or []) if a)
+    date_title = start_date if start_date == end_date else f"{start_date} 至 {end_date}"
+    project_items = []
+    all_authors = set()
+    total = 0
 
+    for conf in projects:
+        name = conf.get("name") or conf.get("project_path") or conf.get("ssh_host") or "未命名工程"
+        branch = (conf.get("source_branch") or "").strip()
+        local_dir = (conf.get("local_dir") or "").strip()
+        if not branch and local_dir and gm.is_git_repo(local_dir):
+            proc = gm.run_git(["branch", "--show-current"], local_dir, check=False)
+            branch = (proc.stdout or "").strip()
+        if not branch:
+            project_items.append({
+                "name": name,
+                "branch": "",
+                "commits": [],
+                "authors": [],
+                "count": 0,
+                "error": "缺少源分支",
+            })
+            continue
+        try:
+            commits = gm.list_commits_by_period(conf, branch, start_date, end_date)
+            for c in commits:
+                if c.get("author"):
+                    all_authors.add(c["author"])
+            if author_filter:
+                commits = [c for c in commits if c.get("author") in author_filter]
+            project_authors = sorted({c.get("author") for c in commits if c.get("author")})
+            total += len(commits)
+            project_items.append({
+                "name": name,
+                "branch": branch,
+                "commits": commits,
+                "authors": project_authors,
+                "count": len(commits),
+            })
+        except Exception as e:
+            project_items.append({
+                "name": name,
+                "branch": branch,
+                "commits": [],
+                "authors": [],
+                "count": 0,
+                "error": str(e),
+            })
 
-# ---------------------------------------------------------------- 配置读写
+    lines = [f"# {date_title} 提交统计", "", "## 汇总",
+             f"- 工程数：{len(project_items)}", f"- Commit 数：{total}"]
+    if author_filter:
+        lines.append(f"- 提交人：{', '.join(sorted(author_filter))}")
+    lines.append("")
 
-def load_projects():
-    """读取配置文件中的工程列表（结构完整，含默认值派生字段）。"""
-    try:
-        _default, projects = gm.load_config(str(CONFIG_FILE))
-        return projects
-    except SystemExit:
-        return []
+    by_author = {}
+    for item in project_items:
+        for c in item.get("commits") or []:
+            by_author.setdefault(c.get("author") or "未知提交人", []).append({
+                **c,
+                "project": item["name"],
+            })
+    if by_author:
+        lines.append("## 按提交人")
+        for author in sorted(by_author):
+            lines.append(f"- {author}（{len(by_author[author])}）")
+            for c in by_author[author]:
+                lines.append(f"  - [{c['project']}] {c['subject']}（{c['short']}）")
+        lines.append("")
 
+    lines.append("## 按工程")
+    for item in project_items:
+        title = f"### {item['name']}"
+        if item.get("branch"):
+            title += f"（{item['branch']}）"
+        lines.append(title)
+        if item.get("error"):
+            lines.append(f"- 统计失败：{item['error']}")
+        elif not item["commits"]:
+            lines.append("- 无提交")
+        else:
+            grouped = {}
+            for c in item["commits"]:
+                grouped.setdefault(c.get("author") or "未知提交人", []).append(c)
+            for author in sorted(grouped):
+                lines.append(f"- {author}（{len(grouped[author])}）")
+                for c in grouped[author]:
+                    lines.append(f"  - {c['short']} {c['subject']}")
+        lines.append("")
 
-def _read_cfg():
-    """从 config.ini 读出 ConfigParser（含 [global] 等所有段）。"""
-    cfg = configparser.ConfigParser()
-    if CONFIG_FILE.exists():
-        cfg.read(str(CONFIG_FILE), encoding="utf-8")
-    return cfg
-
-
-def load_global():
-    """读取 [global] 段下的全局分支设置（用于跨工程的批量源/目标分支）。"""
-    cfg = _read_cfg()
-    if not cfg.has_section("global"):
-        return {"ssh_host": "", "source_branch": "", "target_branches": []}
-    targets_str = cfg.get("global", "target_branches", fallback="")
     return {
-        "ssh_host": cfg.get("global", "ssh_host", fallback=""),
-        "source_branch": cfg.get("global", "source_branch", fallback=""),
-        "target_branches": [t.strip() for t in targets_str.split(",") if t.strip()],
+        "projects": project_items,
+        "authors": sorted(all_authors),
+        "total": total,
+        "markdown": "\n".join(lines).strip() + "\n",
     }
 
 
-def save_global(g):
-    """把全局面板的值写入 [global] 段（不与其他段冲突）。"""
-    g = g or {}
-    cfg = _read_cfg()
-    if not cfg.has_section("global"):
-        cfg.add_section("global")
-    cfg.set("global", "ssh_host", (g.get("ssh_host") or "").strip())
-    cfg.set("global", "source_branch", (g.get("source_branch") or "").strip())
-    tgts = g.get("target_branches") or []
-    if isinstance(tgts, str):
-        tgts = [t.strip() for t in tgts.split(",") if t.strip()]
-    if not isinstance(tgts, list):
-        tgts = []
-    cfg.set("global", "target_branches", ",".join(t.strip() for t in tgts if t.strip()))
-    with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
-        cfg.write(f)
-
-
-def auto_project_name(s, i):
-    """工程名称自动生成：优先用项目路径最后一段，其次 SSH 地址中的路径，回退 projectN。"""
-    name = (s.get("name") or "").strip()
-    if name:
-        return name
-    path = (s.get("project_path") or "").strip("/")
-    if path:
-        return path.split("/")[-1]
-    host = (s.get("ssh_host") or "").strip()
-    if gm._is_full_url(host):
-        p = gm.extract_path_from_url(host)
-        if p:
-            return p.split("/")[-1]
-    return f"project{i}"
-
-
 # ---------------------------------------------------------------- 分支查询
+
+def _gitlab_base_url(raw_url):
+    """从 GitLab 页面/API 地址里提取站点根地址。"""
+    raw = (raw_url or "").strip()
+    if not raw:
+        raise ValueError("请填写 GitLab 项目页地址")
+    parsed = urlparse(raw if "://" in raw else "http://" + raw)
+    if not parsed.netloc:
+        raise ValueError("GitLab 地址格式不正确")
+    return urlunparse((parsed.scheme or "http", parsed.netloc, "", "", "", "")).rstrip("/")
+
+
+def _gitlab_request(base_url, api_path, token="", params=None, api_version="v4",
+                    token_in_query=False, timeout=20):
+    request_params = dict(params or {})
+    if token and token_in_query:
+        request_params["private_token"] = token
+    query = urlencode(request_params)
+    url = f"{base_url}/api/{api_version}{api_path}"
+    if query:
+        url += "?" + query
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 GitLabBranchMergeWeb/1.0",
+        "Connection": "close",
+    }
+    if token and not token_in_query:
+        headers["PRIVATE-TOKEN"] = token
+    req = Request(url, headers=headers)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            charset = resp.headers.get_content_charset() or "utf-8"
+            data = json.loads(resp.read().decode(charset))
+            next_page = resp.headers.get("X-Next-Page", "")
+            return data, next_page
+    except HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"GitLab API {api_version} {e.code}: {detail or e.reason}") from e
+    except Exception:
+        return _gitlab_request_curl(url, token, token_in_query, timeout)
+
+
+def _gitlab_request_curl(url, token="", token_in_query=False, timeout=20):
+    cmd = [
+        "curl",
+        "-sS",
+        "--max-time", str(timeout),
+        "-H", "Accept: application/json",
+        "-H", "User-Agent: Mozilla/5.0 GitLabBranchMergeWeb/1.0",
+    ]
+    if token and not token_in_query:
+        cmd.extend(["-H", f"PRIVATE-TOKEN: {token}"])
+    cmd.append(url)
+    proc = subprocess.run(
+        cmd,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"curl 失败 [{proc.returncode}]")
+    try:
+        data = json.loads(proc.stdout or "null")
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"GitLab API 返回非 JSON: {(proc.stdout or '')[:200]}") from e
+    return data, ""
+
+
+def _gitlab_paginated(base_url, api_path, token="", params=None, max_pages=20,
+                      api_version="v4", token_in_query=False, timeout=20):
+    out = []
+    page = 1
+    base_params = dict(params or {})
+    while page and page <= max_pages:
+        data, next_page = _gitlab_request(base_url, api_path, token, {
+            **base_params,
+            "page": page,
+            "per_page": base_params.get("per_page") or 100,
+        }, api_version=api_version, token_in_query=token_in_query, timeout=timeout)
+        if isinstance(data, list):
+            out.extend(data)
+        else:
+            raise RuntimeError("GitLab API 返回格式异常")
+        page = int(next_page) if str(next_page).isdigit() else 0
+    return out
+
+
+def _gitlab_current_user(base_url, token, api_version="v4", token_in_query=False):
+    data, _next_page = _gitlab_request(
+        base_url, "/user", token, api_version=api_version,
+        token_in_query=token_in_query)
+    if not isinstance(data, dict) or not data.get("id"):
+        raise RuntimeError("无法识别当前 GitLab 用户，请确认 Token 权限")
+    return data
+
+
+def _branch_names_from_gitlab(base_url, project_id, token, api_version="v4",
+                              token_in_query=False):
+    attempts = [
+        (api_version, token_in_query),
+        (api_version, not token_in_query),
+        ("v3" if api_version == "v4" else "v4", token_in_query),
+        ("v3" if api_version == "v4" else "v4", not token_in_query),
+    ]
+    errors = []
+    for version, in_query in attempts:
+        try:
+            branches = _gitlab_paginated(
+                base_url,
+                f"/projects/{quote(str(project_id), safe='')}/repository/branches",
+                token,
+                {"per_page": 100},
+                max_pages=30,
+                api_version=version,
+                token_in_query=in_query,
+                timeout=6,
+            )
+            names = sorted(b.get("name") for b in branches if isinstance(b, dict) and b.get("name"))
+            if names:
+                return names
+        except Exception as e:
+            errors.append(f"{version} {'query' if in_query else 'header'}: {e}")
+    raise RuntimeError("；".join(errors) or "GitLab 未返回分支")
+
+
+def _gitlab_project_params():
+    return {
+        "order_by": "last_activity_at",
+        "sort": "desc",
+        "per_page": 100,
+    }
+
+
+def _dedupe_gitlab_projects(projects):
+    seen = set()
+    out = []
+    for p in projects:
+        if not isinstance(p, dict):
+            continue
+        key = p.get("id") or p.get("path_with_namespace") or p.get("ssh_url_to_repo")
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+def _fetch_gitlab_projects_v4(base_url, token, scope, token_in_query=False):
+    params = _gitlab_project_params()
+    if scope == "membership":
+        user = _gitlab_current_user(
+            base_url, token, api_version="v4", token_in_query=token_in_query)
+        candidates = [
+            (f"/users/{quote(str(user['id']), safe='')}/projects", params),
+            ("/projects", {**params, "membership": "true"}),
+            ("/projects", {**params, "owned": "true"}),
+        ]
+        projects = []
+        for api_path, api_params in candidates:
+            projects.extend(_gitlab_paginated(
+                base_url,
+                api_path,
+                token,
+                api_params,
+                max_pages=30,
+                api_version="v4",
+                token_in_query=token_in_query,
+            ))
+        return _dedupe_gitlab_projects(projects), "v4", token_in_query
+    return _gitlab_paginated(
+        base_url,
+        "/projects",
+        token,
+        params,
+        max_pages=30,
+        api_version="v4",
+        token_in_query=token_in_query,
+    ), "v4", token_in_query
+
+
+def _fetch_gitlab_projects_v3(base_url, token, scope, token_in_query=False):
+    params = _gitlab_project_params()
+    if scope == "membership":
+        projects = []
+        for api_path in ("/projects", "/projects/owned", "/projects/all"):
+            try:
+                projects.extend(_gitlab_paginated(
+                    base_url,
+                    api_path,
+                    token,
+                    params,
+                    max_pages=30,
+                    api_version="v3",
+                    token_in_query=token_in_query,
+                ))
+            except Exception:
+                if api_path == "/projects":
+                    raise
+        return _dedupe_gitlab_projects(projects), "v3", token_in_query
+    return _gitlab_paginated(
+        base_url,
+        "/projects/all",
+        token,
+        params,
+        max_pages=30,
+        api_version="v3",
+        token_in_query=token_in_query,
+    ), "v3", token_in_query
+
+
+def fetch_gitlab_projects(page_url, token="", include_branches=True, scope="membership"):
+    """通过 GitLab API 获取可访问的项目及分支。"""
+    base_url = _gitlab_base_url(page_url)
+    scope = scope if scope in ("membership", "all") else "membership"
+    if scope == "membership" and not token:
+        raise ValueError("同步「Your projects」需要填写 GitLab Private Token（read_api 权限）")
+    warnings = []
+    projects = []
+    api_version = "v4"
+    token_in_query = False
+    attempts = (
+        ("v4 header", lambda: _fetch_gitlab_projects_v4(base_url, token, scope, False)),
+        ("v4 query", lambda: _fetch_gitlab_projects_v4(base_url, token, scope, True)),
+        ("v3 header", lambda: _fetch_gitlab_projects_v3(base_url, token, scope, False)),
+        ("v3 query", lambda: _fetch_gitlab_projects_v3(base_url, token, scope, True)),
+    )
+    attempt_counts = []
+    for label, fn in attempts:
+        try:
+            projects, api_version, token_in_query = fn()
+            attempt_counts.append(f"{label}: {len(projects)}")
+            if projects:
+                if label != "v4 header":
+                    warnings.append(f"已使用 {label} 读取 GitLab 工程")
+                break
+        except Exception as e:
+            attempt_counts.append(f"{label}: 失败")
+            warnings.append(f"{label} 读取失败：{e}")
+    if not projects:
+        warnings.append("所有 GitLab 项目接口均返回 0，尝试结果：" + "；".join(attempt_counts))
+    should_fetch_branches = include_branches and len(projects) <= 20
+    if include_branches and len(projects) > 20:
+        warnings.append(f"已获取 {len(projects)} 个工程；为避免请求过久，已跳过批量分支同步，加入工程后会按单工程加载分支")
+    out = []
+    for p in projects:
+        if not isinstance(p, dict):
+            continue
+        project_id = p.get("id")
+        path = p.get("path_with_namespace") or p.get("path") or ""
+        item = {
+            "id": project_id,
+            "name": p.get("name") or p.get("path") or path,
+            "ssh_host": p.get("ssh_url_to_repo") or "",
+            "http_url": p.get("http_url_to_repo") or p.get("web_url") or "",
+            "web_url": p.get("web_url") or "",
+            "project_path": path,
+            "path": path,
+            "branches": [],
+            "gitlab_api_version": api_version,
+            "gitlab_token_in_query": token_in_query,
+        }
+        if should_fetch_branches and project_id:
+            try:
+                item["branches"] = _branch_names_from_gitlab(
+                    base_url, project_id, token, api_version, token_in_query)
+            except Exception as e:
+                warnings.append(f"{path or item['name']} 分支读取失败：{e}")
+        out.append(item)
+    return out, warnings
+
+
+def diagnose_gitlab_projects(page_url, token=""):
+    """返回 GitLab 项目同步的关键诊断信息，不回显 Token。"""
+    base_url = _gitlab_base_url(page_url)
+    result = {"base_url": base_url, "user": None, "checks": []}
+
+    def add_check(name, fn):
+        try:
+            value = fn()
+            result["checks"].append({"name": name, "ok": True, **value})
+        except Exception as e:
+            result["checks"].append({"name": name, "ok": False, "error": str(e)})
+
+    if token:
+        add_check("v4_version", lambda: {
+            "version": _gitlab_request(base_url, "/version", token, api_version="v4")[0].get("version", "")
+        })
+        add_check("v3_version", lambda: {
+            "version": _gitlab_request(base_url, "/version", token, api_version="v3", token_in_query=True)[0].get("version", "")
+        })
+        add_check("current_user", lambda: {
+            "user": _gitlab_current_user(base_url, token, api_version="v4"),
+        })
+        user_check = next((c for c in result["checks"] if c["name"] == "current_user" and c["ok"]), None)
+        if user_check:
+            result["user"] = user_check.get("user")
+            uid = result["user"].get("id")
+            add_check("v4_users_id_projects", lambda: {
+                "count": len(_gitlab_paginated(
+                    base_url,
+                    f"/users/{quote(str(uid), safe='')}/projects",
+                    token,
+                    {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                    max_pages=30,
+                    api_version="v4",
+                ))
+            })
+        add_check("v4_membership_projects", lambda: {
+            "count": len(_gitlab_paginated(
+                base_url,
+                "/projects",
+                token,
+                {"membership": "true", "order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                max_pages=30,
+                api_version="v4",
+            ))
+        })
+        add_check("v3_current_user", lambda: {
+            "user": _gitlab_current_user(base_url, token, api_version="v3"),
+        })
+        add_check("v3_projects", lambda: {
+            "count": len(_gitlab_paginated(
+                base_url,
+                "/projects",
+                token,
+                {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                max_pages=30,
+                api_version="v3",
+            ))
+        })
+        add_check("v3_query_projects", lambda: {
+            "count": len(_gitlab_paginated(
+                base_url,
+                "/projects",
+                token,
+                {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                max_pages=30,
+                api_version="v3",
+                token_in_query=True,
+            ))
+        })
+        add_check("v3_owned_projects", lambda: {
+            "count": len(_gitlab_paginated(
+                base_url,
+                "/projects/owned",
+                token,
+                {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                max_pages=30,
+                api_version="v3",
+                token_in_query=True,
+            ))
+        })
+        add_check("v3_all_projects", lambda: {
+            "count": len(_gitlab_paginated(
+                base_url,
+                "/projects/all",
+                token,
+                {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+                max_pages=30,
+                api_version="v3",
+                token_in_query=True,
+            ))
+        })
+    add_check("v4_visible_projects", lambda: {
+        "count": len(_gitlab_paginated(
+            base_url,
+            "/projects",
+            token,
+            {"order_by": "last_activity_at", "sort": "desc", "per_page": 100},
+            max_pages=30,
+            api_version="v4",
+        ))
+    })
+    return result
+
 
 def fetch_branches(host, info=None):
     """获取远程仓库的全部分支（git ls-remote --heads）。
@@ -165,6 +551,21 @@ def fetch_branches(host, info=None):
     返回排序后的分支名列表（含 HEAD 分支）。
     """
     info = info or {}
+    gitlab_token = (info.get("gitlab_token") or "").strip()
+    gitlab_url = (info.get("gitlab_url") or "").strip()
+    gitlab_project_id = info.get("gitlab_project_id")
+    gitlab_api_version = (info.get("gitlab_api_version") or "v4").strip()
+    gitlab_token_in_query = bool(info.get("gitlab_token_in_query"))
+    if gitlab_token and gitlab_url and gitlab_project_id:
+        return _branch_names_from_gitlab(
+            _gitlab_base_url(gitlab_url),
+            gitlab_project_id,
+            gitlab_token,
+            gitlab_api_version,
+            gitlab_token_in_query,
+        )
+    global_cfg = info.get("global") if isinstance(info.get("global"), dict) else None
+    host = resolve_config_vars(host, global_cfg)
     project_path = (info.get("project_path") or "").strip("/")
     local_dir = (info.get("local_dir") or "").strip()
     ssh_port = info.get("ssh_port") or 22
@@ -239,6 +640,7 @@ def _git_origin_url(config_path):
 _SKIP_DIRS = {
     "node_modules", "vendor", ".git", ".svn", ".hg", "__pycache__",
     "dist", "build", "target", ".idea", ".vscode", "venv", ".venv", "Pods",
+    ".di-cache",
 }
 
 
@@ -294,146 +696,6 @@ def scan_git_repos(folder):
     return repos, warnings
 
 
-def normalize_projects(submitted):
-    """把前端提交的简化配置补全为 process_project 所需的完整结构。"""
-    try:
-        _default, existing = gm.load_config(str(CONFIG_FILE))
-    except SystemExit:
-        _default, existing = {}, []
-    projects = []
-    for i, s in enumerate(submitted, 1):
-        name = auto_project_name(s, i)
-        base = next((e for e in existing if e["name"] == name), None)
-        p = dict(base) if base else dict(_default)
-        p["name"] = name
-        p["ssh_host"] = (s.get("ssh_host") or "").strip()
-        p["project_path"] = (s.get("project_path") or "").strip("/")
-        p["source_branch"] = (s.get("source_branch") or "").strip()
-        targets = s.get("target_branches") or []
-        if isinstance(targets, str):
-            targets = targets.split(",")
-        p["target_branches"] = [t.strip() for t in targets if t.strip()]
-        # 优先使用前端扫描时传入的本地仓库目录（本地已 clone，直接复用）
-        submitted_local = (s.get("local_dir") or "").strip()
-        if submitted_local:
-            p["local_dir"] = submitted_local
-        if not p.get("local_dir"):
-            dir_part = (p.get("project_path")
-                        or gm.extract_path_from_url(p["ssh_host"])
-                        or name)
-            p["local_dir"] = os.path.join(
-                p.get("local_dir_base", "./repos"), dir_part.replace("/", "__"))
-        projects.append(p)
-    return projects
-
-
-def save_projects(projects):
-    """将工程列表写回 config.ini（保留 [default] 等其他段）。"""
-    cfg = configparser.ConfigParser()
-    if CONFIG_FILE.exists():
-        cfg.read(str(CONFIG_FILE), encoding="utf-8")
-    for sec in list(cfg.sections()):
-        if sec.lower().startswith("project"):
-            cfg.remove_section(sec)
-    for i, p in enumerate(projects, 1):
-        name = (p.get("name") or "").strip() or f"project{i}"
-        sec = f"project:{name}"
-        cfg.add_section(sec)
-        cfg.set(sec, "ssh_host", (p.get("ssh_host") or "").strip())
-        pp = (p.get("project_path") or "").strip()
-        if pp:
-            cfg.set(sec, "project_path", pp)
-        cfg.set(sec, "source_branch", (p.get("source_branch") or "").strip())
-        targets = p.get("target_branches") or []
-        if isinstance(targets, str):
-            targets = [t.strip() for t in targets.split(",") if t.strip()]
-        cfg.set(sec, "target_branches", ",".join(targets))
-        local_dir = (p.get("local_dir") or "").strip()
-        if local_dir:
-            cfg.set(sec, "local_dir", local_dir)
-    with open(str(CONFIG_FILE), "w", encoding="utf-8") as f:
-        cfg.write(f)
-
-
-# ---------------------------------------------------------------- 配置方案（profiles）
-
-def load_profiles():
-    """读取全部已保存的配置方案：{name: {updated, projects, global}}"""
-    if not PROFILES_FILE.exists():
-        return {}
-    try:
-        with open(str(PROFILES_FILE), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
-def save_profile(name, projects, global_cfg):
-    """把当前配置保存为一个命名方案（按名称覆盖）。"""
-    data = load_profiles()
-    data[name] = {
-        "updated": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "projects": projects,
-        "global": global_cfg or {},
-    }
-    with open(str(PROFILES_FILE), "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def delete_profile(name):
-    data = load_profiles()
-    if name in data:
-        del data[name]
-        with open(str(PROFILES_FILE), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def suggest_profile_name(global_cfg):
-    """根据全局目标分支自动生成方案名（目标分支同名）。"""
-    g = global_cfg or {}
-    targets = g.get("target_branches") or []
-    if isinstance(targets, str):
-        targets = [t.strip() for t in targets.split(",") if t.strip()]
-    return targets[0] if targets else ""
-
-
-def profile_summary(name, data):
-    """生成方案列表所需的摘要信息（含源分支与目标分支说明）。"""
-    projects = data.get("projects") or []
-    g = data.get("global") or {}
-    targets = g.get("target_branches") or []
-    if isinstance(targets, str):
-        targets = [t.strip() for t in targets.split(",") if t.strip()]
-
-    # 源分支：优先取全局配置，否则从各工程去重提取
-    source = (g.get("source_branch") or "").strip()
-    source_branches = []
-    if source:
-        source_branches = [source]
-    else:
-        for p in projects:
-            sb = (p.get("source_branch") or "").strip()
-            if sb and sb not in source_branches:
-                source_branches.append(sb)
-
-    # 工程名列表：让用户知道方案里具体包含哪几个工程
-    project_names = []
-    for i, p in enumerate(projects):
-        pn = auto_project_name(p, i + 1)
-        if pn and pn not in project_names:
-            project_names.append(pn)
-
-    return {
-        "name": name,
-        "updated": data.get("updated", ""),
-        "project_count": len(projects),
-        "project_names": project_names,
-        "source_branches": source_branches,
-        "target_branches": targets,
-    }
-
-
 # ---------------------------------------------------------------- 后台合并
 
 def start_merge(projects):
@@ -475,6 +737,13 @@ def start_merge(projects):
                     it["commits"] = commits
                     it["commit_count"] = len(commits)
                 gm.save_undo(all_undo)
+                append_audit_log(
+                    "merge",
+                    "执行合并",
+                    f"共 {len(projects)} 个工程，{len(all_undo)} 个分支可撤回",
+                    "merge",
+                    {"items": all_undo},
+                )
                 logging.info("已记录 %d 个分支的合并快照，可在界面撤回", len(all_undo))
             logging.info("任务结束：%s",
                          "全部成功" if ok_all else "存在失败，请人工检查")
@@ -513,8 +782,42 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Access-Control-Allow-Origin", "*")
-        # 禁止浏览器启发式缓存，确保每次部署后拿到最新资源
-        self.send_header("Cache-Control", "no-cache")
+        # 开发期优先保证每次重启/刷新都拿到最新资源
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _serve_index_file(self, path):
+        index_path = Path(path)
+        try:
+            text = index_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            self.send_error(404)
+            return
+        dist_root = BASE_DIR / "dist"
+
+        def version_asset(match):
+            quote_char, asset_path = match.group(1), match.group(2)
+            clean_path = asset_path.split("?", 1)[0]
+            asset_file = (dist_root / clean_path.lstrip("/")).resolve()
+            try:
+                asset_file.relative_to(dist_root.resolve())
+                version = str(int(asset_file.stat().st_mtime))
+            except Exception:
+                version = str(int(index_path.stat().st_mtime))
+            return f'{quote_char}{html.escape(clean_path)}?v={version}{quote_char}'
+
+        text = re.sub(r'(["\'])(/assets/[^"\']+\.(?:js|css))(?:\?[^"\']*)?\1', version_asset, text)
+        data = text.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
         self.end_headers()
         self.wfile.write(data)
 
@@ -542,8 +845,7 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if path in ("/", "/index.html"):
             if (dist_root / "index.html").is_file():
-                self._serve_file(dist_root / "index.html",
-                                 "text/html; charset=utf-8")
+                self._serve_index_file(dist_root / "index.html")
                 return True
             return False
         rel = path.lstrip("/")
@@ -563,6 +865,13 @@ class Handler(BaseHTTPRequestHandler):
         self._serve_file(target, ctype)
         return True
 
+    def _serve_dist_index(self):
+        dist_index = BASE_DIR / "dist" / "index.html"
+        if dist_index.is_file():
+            self._serve_index_file(dist_index)
+            return True
+        return False
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -581,12 +890,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json({"busy": STATE["busy"],
                              "projects": load_projects(),
                              "global": load_global()})
+        elif path == "/api/commit/report/ping":
+            self._send_json({"ok": True, "feature": "commit-report"})
         elif path == "/api/logs":
             q = parse_qs(parsed.query)
             since = int(q.get("since", ["0"])[0] or 0)
             entries = log_store.since(since)
             new_since = entries[-1][0] if entries else since
             self._send_json({"logs": entries, "since": new_since})
+        elif path == "/api/logs/all":
+            entries = log_store.all()
+            new_since = entries[-1][0] if entries else 0
+            self._send_json({"logs": entries, "since": new_since})
+        elif path == "/api/audit/logs":
+            self._send_json({"ok": True, "logs": load_audit_logs()})
         elif path == "/api/clear":
             log_store.clear()
             self._send_json({"ok": True})
@@ -633,24 +950,68 @@ class Handler(BaseHTTPRequestHandler):
                     "commits": it.get("commits") or [],
                 } for it in data["items"]],
             })
+        elif path in ("/api/branch/undo", "/api/branch/create/undo"):
+            data = load_branch_op_undo()
+            if not data:
+                self._send_json({"ok": True, "has_undo": False})
+                return
+            self._send_json({
+                "ok": True,
+                "has_undo": True,
+                "action": data.get("action", ""),
+                "created_at": data.get("created_at", ""),
+                "items": [{
+                    "name": it.get("name", ""),
+                    "branch_name": it.get("branch_name", ""),
+                    "old_name": it.get("old_name", ""),
+                    "new_name": it.get("new_name", ""),
+                    "sha": (it.get("sha") or "")[:8],
+                    "project": {
+                        "name": (it.get("project") or {}).get("name", ""),
+                        "ssh_host": (it.get("project") or {}).get("ssh_host", ""),
+                        "project_path": (it.get("project") or {}).get("project_path", ""),
+                        "local_dir": (it.get("project") or {}).get("local_dir", ""),
+                    },
+                } for it in data.get("items", [])],
+            })
         elif not self._serve_dist(path):
+            if "." not in Path(path).name and self._serve_dist_index():
+                return
             self.send_error(404)
 
     def do_POST(self):
         parsed = urlparse(self.path)
         body = self._read_body()
+        request_global = body.get("global") if isinstance(body.get("global"), dict) else None
         if parsed.path == "/api/branches":
             host = (body.get("ssh_host") or "").strip()
-            if not host:
-                self._send_json({"ok": False, "error": "请先填写 SSH 地址"}, code=400)
+            has_gitlab_api = bool(body.get("gitlab_token") and body.get("gitlab_url") and body.get("gitlab_project_id"))
+            local_dir = (body.get("local_dir") or "").strip()
+            has_local_repo = bool(local_dir and gm.is_git_repo(local_dir))
+            if not host and not has_gitlab_api and not has_local_repo:
+                self._send_json({"ok": False, "error": "请先填写 SSH 地址或使用远程 GitLab 工程"}, code=400)
                 return
             try:
                 branches = fetch_branches(host, body)
-                self._send_json({"ok": True, "branches": branches})
+                current_branch = ""
+                local_dir = (body.get("local_dir") or "").strip()
+                if local_dir and gm.is_git_repo(local_dir):
+                    current_proc = gm.run_git(
+                        ["rev-parse", "--abbrev-ref", "HEAD"],
+                        local_dir,
+                        check=False,
+                    )
+                    if current_proc.returncode == 0:
+                        current_branch = current_proc.stdout.strip()
+                self._send_json({
+                    "ok": True,
+                    "branches": branches,
+                    "current_branch": current_branch,
+                })
             except Exception as e:
                 self._send_json({"ok": False, "error": f"获取分支失败: {e}"}, code=400)
         elif parsed.path == "/api/branch/create":
-            projects = normalize_projects(body.get("projects", []))
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
             raw = body.get("branch_names")
             if raw is None:
                 raw = body.get("branch_name") or ""
@@ -670,29 +1031,46 @@ class Handler(BaseHTTPRequestHandler):
             for bn in branch_names:
                 for p in projects:
                     try:
-                        ok, msg = gm.create_branch(p, bn, from_branch or None)
+                        ok, msg, commands, meta = gm.create_branch(p, bn, from_branch or None)
                         results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": True, "message": msg})
+                                        "ok": True, "message": msg,
+                                        "commands": commands})
                         undo_items.append({
-                            "action": "create", "project": p,
-                            "branch": bn, "remote": p.get("remote") or "origin",
+                            "name": p["name"],
+                            "branch_name": meta["branch_name"],
+                            "sha": meta["sha"],
+                            "project": p,
                         })
                     except Exception as e:
                         results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": False, "error": str(e)})
-            undo_id = gm.save_branch_undo_record(
-                "create", f"创建分支：{'、'.join(branch_names)}",
-                undo_items) if undo_items else None
+                                        "ok": False, "error": str(e),
+                                        "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("create", undo_items)
+                append_audit_log(
+                    "branch_create",
+                    "创建分支",
+                    f"基于 {from_branch} 创建：{', '.join(branch_names)}；成功 {len(undo_items)} 个远程分支",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "branch_names": branch_names,
+                            "from_branch": from_branch,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "create",
-                             "branch_names": branch_names, "undo_id": undo_id,
-                             "results": results})
+                             "branch_names": branch_names, "results": results,
+                             "undo_count": len(undo_items)})
         elif parsed.path == "/api/branch/delete":
-            projects = normalize_projects(body.get("projects", []))
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
             raw = body.get("branch_names")
             if raw is None:
                 raw = body.get("branch_name") or ""
             if isinstance(raw, str):
-                # 兼容单个分支名；也支持用逗号/换行分隔的多个名字
                 raw = [s for s in raw.replace("\n", ",").split(",") if s.strip()]
             branch_names = [str(s).strip() for s in raw if str(s).strip()]
             if not projects:
@@ -706,27 +1084,40 @@ class Handler(BaseHTTPRequestHandler):
             for bn in branch_names:
                 for p in projects:
                     try:
-                        sha = gm.branch_sha(p, bn)
-                        ok, msg = gm.delete_branch(p, bn)
-                        results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": True, "message": msg})
-                        if sha:
-                            undo_items.append({
-                                "action": "delete", "project": p,
-                                "branch": bn, "sha": sha,
-                                "remote": p.get("remote") or "origin",
-                            })
+                        ok, msg, commands, meta = gm.delete_branch(p, bn)
+                        results.append({"name": f"{p['name']}（{bn}）", "ok": True,
+                                        "message": msg, "commands": commands})
+                        undo_items.append({
+                            "name": p["name"],
+                            "branch_name": meta["branch_name"],
+                            "sha": meta["sha"],
+                            "project": p,
+                        })
                     except Exception as e:
-                        results.append({"name": f"{p['name']}（{bn}）",
-                                        "ok": False, "error": str(e)})
-            undo_id = gm.save_branch_undo_record(
-                "delete", f"删除分支：{'、'.join(branch_names)}",
-                undo_items) if undo_items else None
+                        results.append({"name": f"{p['name']}（{bn}）", "ok": False,
+                                        "error": str(e),
+                                        "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("delete", undo_items)
+                append_audit_log(
+                    "branch_delete",
+                    "删除分支",
+                    f"删除分支：{', '.join(branch_names)}；成功 {len(undo_items)} 个远程分支，可按原 SHA 恢复",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "branch_names": branch_names,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "delete",
-                             "branch_names": branch_names, "undo_id": undo_id,
-                             "results": results})
+                             "branch_names": branch_names, "results": results,
+                             "undo_count": len(undo_items)})
         elif parsed.path == "/api/branch/rename":
-            projects = normalize_projects(body.get("projects", []))
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
             old_name = (body.get("old_name") or "").strip()
             new_name = (body.get("new_name") or "").strip()
             if not projects:
@@ -742,43 +1133,121 @@ class Handler(BaseHTTPRequestHandler):
             undo_items = []
             for p in projects:
                 try:
-                    ok, msg = gm.rename_branch(p, old_name, new_name)
-                    results.append({"name": p["name"], "ok": True, "message": msg})
+                    ok, msg, commands, meta = gm.rename_branch(p, old_name, new_name)
+                    results.append({"name": p["name"], "ok": True, "message": msg,
+                                    "commands": commands})
                     undo_items.append({
-                        "action": "rename", "project": p,
-                        "branch": new_name, "old_name": old_name,
-                        "remote": p.get("remote") or "origin",
+                        "name": p["name"],
+                        "old_name": meta["old_name"],
+                        "new_name": meta["new_name"],
+                        "sha": meta["sha"],
+                        "project": p,
                     })
                 except Exception as e:
-                    results.append({"name": p["name"], "ok": False, "error": str(e)})
-            undo_id = gm.save_branch_undo_record(
-                "rename", f"重命名分支：{old_name} → {new_name}",
-                undo_items) if undo_items else None
+                    results.append({"name": p["name"], "ok": False, "error": str(e),
+                                    "commands": getattr(e, "commands", [])})
+            if undo_items:
+                save_branch_op_undo("rename", undo_items)
+                append_audit_log(
+                    "branch_rename",
+                    "重命名分支",
+                    f"{old_name} -> {new_name}；成功重命名 {len(undo_items)} 个远程分支",
+                    "branch",
+                    {
+                        "request": {
+                            "projects": projects,
+                            "old_name": old_name,
+                            "new_name": new_name,
+                        },
+                        "results": results,
+                        "undo_items": undo_items,
+                    },
+                )
             self._send_json({"ok": True, "action": "rename",
                              "old_name": old_name, "new_name": new_name,
-                             "undo_id": undo_id, "results": results})
-        elif parsed.path == "/api/branch/undo":
-            # 执行分支操作撤回：逐条执行逆向操作，同步返回结果
-            undo_id = (body.get("undo_id") or "").strip()
-            records = gm.load_branch_undo()
-            rec = next((r for r in records if r.get("id") == undo_id), None)
-            if not rec:
-                self._send_json({"ok": False, "error": "撤回记录不存在或已过期"}, code=404)
+                             "results": results, "undo_count": len(undo_items)})
+        elif parsed.path == "/api/branch/switch-local":
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
+            fallback_branch = (body.get("branch_name") or "").strip()
+            if not projects:
+                self._send_json({"ok": False, "error": "请至少选择一个工程"}, code=400)
                 return
             results = []
-            for item in rec.get("items", []):
-                pname = (item.get("project") or {}).get("name", "")
-                branch = item.get("branch") or ""
-                label = f"{pname}（{branch}）" if pname else branch
+            for p in projects:
+                branch_name = (p.get("switch_branch") or fallback_branch).strip()
+                if not branch_name:
+                    results.append({
+                        "name": p["name"],
+                        "ok": False,
+                        "error": "请选择要切换的分支",
+                        "commands": [],
+                    })
+                    continue
                 try:
-                    msg = gm.undo_branch_item(item)
-                    results.append({"name": label, "ok": True, "message": msg})
+                    ok, msg, commands, meta = gm.switch_local_branch(p, branch_name)
+                    results.append({
+                        "name": p["name"],
+                        "ok": True,
+                        "message": msg,
+                        "commands": commands,
+                        "branch_name": meta.get("branch_name", branch_name),
+                    })
                 except Exception as e:
-                    results.append({"name": label, "ok": False, "error": str(e)})
-            gm.remove_branch_undo(undo_id)
-            self._send_json({"ok": True, "action": rec.get("action"),
-                             "undo_id": undo_id, "desc": rec.get("desc"),
+                    results.append({
+                        "name": p["name"],
+                        "ok": False,
+                        "error": str(e),
+                        "commands": getattr(e, "commands", []),
+                    })
+            self._send_json({"ok": True, "action": "switch-local",
                              "results": results})
+        elif parsed.path in ("/api/branch/undo", "/api/branch/create/undo"):
+            data = load_branch_op_undo()
+            items = (data or {}).get("items") or []
+            if not items:
+                self._send_json({"ok": False, "error": "暂无可撤回的分支操作记录"}, code=400)
+                return
+            action = data.get("action")
+            results = []
+            for it in items:
+                p = it.get("project") or {}
+                label = it.get("name") or p.get("name") or p.get("ssh_host")
+                try:
+                    if action == "create":
+                        branch_name = (it.get("branch_name") or "").strip()
+                        ok, msg, commands, _meta = gm.delete_branch(
+                            p, branch_name, allow_protected=True)
+                        name = f"{label}（{branch_name}）"
+                    elif action == "delete":
+                        branch_name = (it.get("branch_name") or "").strip()
+                        ok, msg, commands, _meta = gm.create_branch_at_sha(
+                            p, branch_name, it.get("sha"))
+                        name = f"{label}（{branch_name}）"
+                    elif action == "rename":
+                        old_name = (it.get("old_name") or "").strip()
+                        new_name = (it.get("new_name") or "").strip()
+                        ok, msg, commands, _meta = gm.rename_branch(
+                            p, new_name, old_name, allow_protected_old=True)
+                        name = f"{label}（{new_name} → {old_name}）"
+                    else:
+                        raise RuntimeError("未知的分支撤回类型")
+                    results.append({"name": name, "ok": True,
+                                    "message": msg, "commands": commands})
+                except Exception as e:
+                    results.append({"name": label, "ok": False, "error": str(e),
+                                    "commands": getattr(e, "commands", [])})
+            if all(r.get("ok") for r in results):
+                clear_branch_op_undo()
+                append_audit_log(
+                    f"undo_{action}",
+                    "撤回分支操作",
+                    f"已撤回 {len(results)} 个远程分支操作",
+                    "",
+                    {"action": action},
+                )
+            self._send_json({"ok": True, "action": f"undo_{action}",
+                             "results": results,
+                             "cleared": all(r.get("ok") for r in results)})
         elif parsed.path == "/api/scan":
             folder = (body.get("folder") or "").strip()
             if not folder:
@@ -792,18 +1261,93 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": str(e)}, code=400)
             except Exception as e:
                 self._send_json({"ok": False, "error": f"扫描失败: {e}"}, code=400)
+        elif parsed.path == "/api/gitlab/projects":
+            url = (body.get("url") or "").strip()
+            token = (body.get("token") or "").strip()
+            include_branches = body.get("include_branches") is not False
+            scope = (body.get("scope") or "membership").strip()
+            if not url:
+                self._send_json({"ok": False, "error": "请填写 GitLab 项目页地址"}, code=400)
+                return
+            try:
+                projects, warnings = fetch_gitlab_projects(url, token, include_branches, scope)
+                self._send_json({"ok": True, "url": url,
+                                 "projects": projects, "warnings": warnings})
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"获取 GitLab 项目失败: {e}"}, code=400)
+        elif parsed.path == "/api/gitlab/diagnose":
+            url = (body.get("url") or "").strip()
+            token = (body.get("token") or "").strip()
+            if not url:
+                self._send_json({"ok": False, "error": "请填写 GitLab 项目页地址"}, code=400)
+                return
+            try:
+                self._send_json({"ok": True, **diagnose_gitlab_projects(url, token)})
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"GitLab 诊断失败: {e}"}, code=400)
+        elif parsed.path == "/api/project/pull":
+            if STATE["busy"]:
+                self._send_json({"ok": False, "error": "任务运行中，暂不能拉取项目"}, code=409)
+                return
+            host = (body.get("ssh_host") or "").strip()
+            local_dir = (body.get("local_dir") or "").strip()
+            if not host:
+                self._send_json({"ok": False, "error": "请先填写 SSH 地址"}, code=400)
+                return
+            if not local_dir:
+                self._send_json({"ok": False, "error": "请填写本地目录"}, code=400)
+                return
+            try:
+                conf = normalize_projects([{**body, "local_dir": local_dir}],
+                                          global_cfg=request_global)[0]
+                repo_dir = project_repo_dir(local_dir, conf)
+                conf["local_dir"] = repo_dir
+                if Path(repo_dir).exists():
+                    self._send_json({
+                        "ok": False,
+                        "error": f"目标目录已存在相同工程，不能拉取：{repo_dir}",
+                    }, code=409)
+                    return
+                pulled_dir = gm.ensure_repo(conf, check_branches=False)
+                branches = fetch_branches(host, {**body, "local_dir": pulled_dir})
+                self._send_json({"ok": True, "local_dir": pulled_dir,
+                                 "branches": branches})
+            except SystemExit as e:
+                self._send_json({"ok": False, "error": str(e)}, code=400)
+            except Exception as e:
+                self._send_json({"ok": False, "error": str(e)}, code=400)
         elif parsed.path == "/api/save":
-            projects = normalize_projects(body.get("projects", []))
+            global_cfg = request_global
+            projects = normalize_projects(body.get("projects", []),
+                                          resolve_vars=False,
+                                          global_cfg=global_cfg)
             save_projects(projects)
-            if isinstance(body.get("global"), dict):
-                save_global(body["global"])
+            if global_cfg is not None:
+                save_global(global_cfg)
             self._send_json({"ok": True,
                              "projects": load_projects(),
                              "global": load_global()})
+        elif parsed.path == "/api/audit/log":
+            append_audit_log(
+                body.get("action") or "frontend",
+                body.get("title") or "危险操作",
+                body.get("detail") or "",
+                body.get("undo_type") or "",
+                body.get("payload") if isinstance(body.get("payload"), dict) else {},
+            )
+            self._send_json({"ok": True})
+        elif parsed.path == "/api/audit/log/delete":
+            ids = body.get("ids") or []
+            if isinstance(ids, str):
+                ids = [ids]
+            removed = delete_audit_logs(ids)
+            self._send_json({"ok": True, "removed": removed})
         elif parsed.path == "/api/profile/save":
             name = (body.get("name") or "").strip()
-            projects = normalize_projects(body.get("projects", []))
-            global_cfg = body.get("global") if isinstance(body.get("global"), dict) else None
+            global_cfg = request_global
+            projects = normalize_projects(body.get("projects", []),
+                                          resolve_vars=False,
+                                          global_cfg=global_cfg)
             # 名称留空时，自动按全局目标分支命名
             if not name:
                 name = suggest_profile_name(global_cfg)
@@ -819,10 +1363,13 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": f"方案「{name}」不存在"}, code=404)
                 return
             entry = data[name]
-            projects = normalize_projects(entry.get("projects", []))
+            global_cfg = entry.get("global") if isinstance(entry.get("global"), dict) else None
+            projects = normalize_projects(entry.get("projects", []),
+                                          resolve_vars=False,
+                                          global_cfg=global_cfg)
             save_projects(projects)
-            if isinstance(entry.get("global"), dict):
-                save_global(entry["global"])
+            if global_cfg is not None:
+                save_global(global_cfg)
             # 直接返回 normalize 后的方案数据，避免 gm.load_config 严格校验
             # （含未填 ssh_host 的工程）导致 load_projects 返回空列表
             self._send_json({"ok": True,
@@ -833,7 +1380,28 @@ class Handler(BaseHTTPRequestHandler):
             if not name:
                 self._send_json({"ok": False, "error": "缺少方案名称"}, code=400)
                 return
+            data = load_profiles()
+            if name in data:
+                append_audit_log(
+                    "profile_delete",
+                    "删除配置方案",
+                    f"删除方案「{name}」",
+                    "profile_delete",
+                    {"name": name, "profile": data[name]},
+                )
             delete_profile(name)
+            self._send_json({"ok": True})
+        elif parsed.path == "/api/profile/restore":
+            name = (body.get("name") or "").strip()
+            profile = body.get("profile")
+            if not name or not isinstance(profile, dict):
+                self._send_json({"ok": False, "error": "缺少方案恢复数据"}, code=400)
+                return
+            data = load_profiles()
+            data[name] = profile
+            with open(str(PROFILES_FILE), "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            append_audit_log("profile_restore", "恢复配置方案", f"恢复方案「{name}」")
             self._send_json({"ok": True})
         elif parsed.path == "/api/commits":
             branch = (body.get("branch") or "").strip()
@@ -849,7 +1417,7 @@ class Handler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 page_size = 50
             try:
-                conf = normalize_projects([body])[0]
+                conf = normalize_projects([body], global_cfg=request_global)[0]
                 offset = (page - 1) * page_size
                 commits = gm.list_commits(conf, branch,
                                           count=page_size, offset=offset)
@@ -860,6 +1428,30 @@ class Handler(BaseHTTPRequestHandler):
                                  "has_more": has_more})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"获取 commit 失败: {e}"}, code=400)
+        elif parsed.path == "/api/commit/report":
+            report_date = (body.get("date") or "").strip()
+            start_date = (body.get("start_date") or report_date).strip()
+            end_date = (body.get("end_date") or report_date).strip()
+            if (not re.match(r"^\d{4}-\d{2}-\d{2}$", start_date) or
+                    not re.match(r"^\d{4}-\d{2}-\d{2}$", end_date)):
+                self._send_json({"ok": False, "error": "请选择统计期间"}, code=400)
+                return
+            if start_date > end_date:
+                start_date, end_date = end_date, start_date
+            authors = body.get("authors") or []
+            if isinstance(authors, str):
+                authors = [a.strip() for a in authors.split(",") if a.strip()]
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
+            if not projects:
+                self._send_json({"ok": False, "error": "请选择至少一个工程"}, code=400)
+                return
+            try:
+                data = _commit_report(projects, start_date, end_date, authors)
+                self._send_json({"ok": True, "date": start_date,
+                                 "start_date": start_date,
+                                 "end_date": end_date, **data})
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"生成统计失败: {e}"}, code=400)
         elif parsed.path == "/api/merge/range":
             # 返回 source..target 之间的 commits（本次将合并进 target 的）
             local_dir = (body.get("local_dir") or "").strip()
@@ -876,7 +1468,9 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 items, total = gm.range_commits(local_dir, source, target, limit=limit)
                 self._send_json({"ok": True, "items": items, "total": total,
-                                 "source": source, "target": target})
+                                 "source": source, "target": target,
+                                 "limit": limit,
+                                 "truncated": total > len(items)})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"获取 commits 失败: {e}"}, code=400)
         elif parsed.path == "/api/commit/diff":
@@ -906,13 +1500,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json({"ok": False, "error": "请至少选择一个 commit"}, code=400)
                 return
             try:
-                conf = normalize_projects([body])[0]
+                conf = normalize_projects([body], global_cfg=request_global)[0]
                 msg = gm.cherry_pick_commits(conf, commits, target)
+                append_audit_log(
+                    "cherry_pick",
+                    "Cherry-Pick",
+                    f"{conf.get('name') or conf.get('ssh_host')} -> {target}，{len(commits)} 个 commit",
+                    "",
+                    {
+                        "project": conf,
+                        "target_branch": target,
+                        "commits": commits,
+                        "message": msg,
+                    },
+                )
                 self._send_json({"ok": True, "message": msg})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"pick 失败: {e}"}, code=400)
         elif parsed.path == "/api/merge":
-            projects = normalize_projects(body.get("projects", []))
+            projects = normalize_projects(body.get("projects", []), global_cfg=request_global)
             if not projects:
                 self._send_json({"ok": False, "error": "没有可执行的工程"}, code=400)
                 return
@@ -949,6 +1555,13 @@ class Handler(BaseHTTPRequestHandler):
                                  "全部成功" if ok_all else "存在失败，请人工检查")
                     # 撤回完成后清除快照，避免重复撤回
                     gm.clear_undo()
+                    append_audit_log(
+                        "undo_merge",
+                        "撤回合并",
+                        "已执行最近一次合并撤回" if ok_all else "合并撤回存在失败",
+                        "",
+                        {},
+                    )
                 finally:
                     with STATE["lock"]:
                         STATE["busy"] = False

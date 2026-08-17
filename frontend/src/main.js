@@ -6,10 +6,12 @@ import * as Icons from '@element-plus/icons-vue'
 import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import App from './App.vue'
-import './styles/main.css'
+import { router } from './router'
+import './styles/index.css'
 
 const app = createApp(App)
 app.use(createPinia())
+app.use(router)
 app.use(ElementPlus, { locale: zhCn })
 for (const [name, comp] of Object.entries(Icons)) {
   app.component(name, comp)

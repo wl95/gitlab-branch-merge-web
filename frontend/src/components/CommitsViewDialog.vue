@@ -38,7 +38,10 @@
         </el-select>
         <span v-else class="cv-branch tgt">{{ store.currentTarget || '（未设置）' }}</span>
 
-        <span class="cv-count">共 {{ store.items.length }} 个 commit 即将合并</span>
+        <span class="cv-count">
+          共 {{ store.total || store.items.length }} 个 commit 即将合并
+          <template v-if="store.truncated">（仅展示前 {{ store.items.length }} 个）</template>
+        </span>
         <span v-if="hasMergeOnly" class="cv-merge-tip" title="目标分支已包含源分支的所有内容变更，下列合并提交因内容已并入但本身仍作为合并动作保留显示">
           含合并提交
         </span>
