@@ -59,7 +59,7 @@ export const useMergeStore = defineStore('merge', {
       }
     },
 
-    async startCommandLogSession({ clear = false, reveal = true } = {}) {
+    async startCommandLogSession({ clear = false, reveal = false } = {}) {
       this.commandSessionDepth += 1
       if (this.commandSessionDepth > 1) return
       if (reveal) this.collapsed = false

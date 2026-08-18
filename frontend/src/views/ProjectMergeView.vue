@@ -17,10 +17,10 @@
             </button>
           </div>
           <div class="sidebar-panel">
-            <ScanPanel v-show="activeSidebarTab === 'scan'" />
-            <GitlabProjectsPanel v-show="activeSidebarTab === 'gitlab'" />
-            <ProfilePanel v-show="activeSidebarTab === 'profiles'" />
-            <GlobalPanel v-show="activeSidebarTab === 'global'" />
+            <ScanPanel v-if="activeSidebarTab === 'scan'" />
+            <GitlabProjectsPanel v-else-if="activeSidebarTab === 'gitlab'" />
+            <ProfilePanel v-else-if="activeSidebarTab === 'profiles'" />
+            <GlobalPanel v-else />
           </div>
         </aside>
 

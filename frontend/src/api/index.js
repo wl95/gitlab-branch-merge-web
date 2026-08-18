@@ -95,6 +95,7 @@ export const api = {
   profiles: () => request('/profiles'),
   profileSave: (name, projects, global) =>
     request('/profile/save', 'POST', { name, projects, global }),
+  profileGet: (name) => request(`/profile/get?name=${encodeURIComponent(name)}`),
   profileLoad: (name) => request('/profile/load', 'POST', { name }),
   profileDelete: (name) => request('/profile/delete', 'POST', { name }),
   profileRestore: (name, profile) => request('/profile/restore', 'POST', { name, profile }),

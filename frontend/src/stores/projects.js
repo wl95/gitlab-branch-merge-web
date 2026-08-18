@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
+import { useMergeStore } from './merge'
+import { usePickStore } from './pick'
 import {
   loadSshPresets,
   normalizeVarName,
@@ -138,6 +140,17 @@ export const useProjectsStore = defineStore('projects', {
       const i = this.projects.findIndex((p) => p.id === id)
       if (i < 0) return null
       const [removed] = this.projects.splice(i, 1)
+      if (removed) removed.checked = false
+      const merge = useMergeStore()
+      if (merge.commitCounts[id]) {
+        const next = { ...merge.commitCounts }
+        delete next[id]
+        merge.commitCounts = next
+      }
+      const pick = usePickStore()
+      if (pick.visible && pick.ctx && pick.ctx.id === id) {
+        pick.close()
+      }
       return removed
     },
 
@@ -621,6 +634,13 @@ export const useProjectsStore = defineStore('projects', {
       return r
     },
 
+    async saveProfilePayload(name, projects, globalCfg) {
+      const r = await api.profileSave(name, projects || [], globalCfg || {})
+      await this.loadProfiles()
+      ElMessage.success(`方案「${r.name}」已保存`)
+      return r
+    },
+
     // 加载指定方案：替换当前工程列表与全局配置，并重新拉取分支
     async loadProfile(name) {
       const r = await api.profileLoad(name)
@@ -645,6 +665,30 @@ export const useProjectsStore = defineStore('projects', {
       await api.profileDelete(name)
       this.profiles = this.profiles.filter((p) => p.name !== name)
       ElMessage.success(`方案「${name}」已删除`)
+    },
+
+    async renameProfile(oldName, newName) {
+      const from = (oldName || '').trim()
+      const to = (newName || '').trim()
+      if (!from || !to) return null
+      const existing = this.profiles.find((p) => p.name === from)
+      if (!existing) {
+        throw new Error(`方案「${from}」不存在`)
+      }
+      const loaded = await api.profileLoad(from)
+      const payload = loaded.projects || []
+      const globalCfg = loaded.global || {}
+      const r = await api.profileSave(to, payload, globalCfg)
+      if (to !== from) {
+        try {
+          await api.profileDelete(from)
+        } catch {
+          /* ignore old profile cleanup */
+        }
+      }
+      await this.loadProfiles()
+      ElMessage.success(`方案「${from}」已更新为「${r.name || to}」`)
+      return r
     },
   },
 })

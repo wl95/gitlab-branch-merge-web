@@ -886,6 +886,20 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "profiles": [profile_summary(n, d) for n, d in data.items()],
             })
+        elif path == "/api/profile/get":
+            q = parse_qs(parsed.query)
+            name = (q.get("name", [""])[0] or "").strip()
+            data = load_profiles()
+            if name not in data:
+                self._send_json({"ok": False, "error": f"方案「{name}」不存在"}, code=404)
+                return
+            entry = data[name]
+            self._send_json({
+                "ok": True,
+                "name": name,
+                "projects": entry.get("projects") or [],
+                "global": entry.get("global") or {},
+            })
         elif path == "/api/state":
             self._send_json({"busy": STATE["busy"],
                              "projects": load_projects(),

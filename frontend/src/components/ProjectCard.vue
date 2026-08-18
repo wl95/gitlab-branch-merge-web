@@ -358,6 +358,7 @@ function removeProject() {
     { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
   )
     .then(async () => {
+      p.checked = false
       const removed = store.removeProject(p.id)
       if (removed) {
         await api.auditLog({

@@ -1,7 +1,7 @@
 <template>
   <el-drawer
     v-model="store.visible"
-    size="640px"
+    size="920px"
     :with-header="false"
     custom-class="pick-drawer"
   >

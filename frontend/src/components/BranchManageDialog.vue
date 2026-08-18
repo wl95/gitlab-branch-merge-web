@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    width="760"
+    width="960"
     top="6vh"
     :close-on-click-modal="false"
     class="bm-dialog"
@@ -690,7 +690,6 @@ async function run() {
       ElMessage.warning('请填写要删除的分支名')
       return
     }
-    const nameList = dnames.map((n) => `「${n}」`).join('、')
     try {
       await ElMessageBox.confirm(
         `将删除所选 ${list.length} 个工程上的 ${names.length} 个远程分支，确定继续？`,
@@ -908,18 +907,16 @@ async function undoBranchOperation() {
 .bm-proj-name {
   font-size: 12px;
   color: var(--text);
-  white-space: nowrap;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  min-width: 0;
 }
 .bm-proj-host {
   font-size: 11px;
   color: var(--muted);
-  white-space: nowrap;
-  max-width: 240px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  min-width: 0;
 }
 
 /* 表单 */
@@ -1001,17 +998,15 @@ async function undoBranchOperation() {
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 .bm-switch-dir {
   color: var(--muted);
   font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
 /* 执行区 */
@@ -1148,10 +1143,9 @@ async function undoBranchOperation() {
   color: var(--text);
   font-weight: 500;
   flex-shrink: 0;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 .bm-res-msg {
   color: var(--muted);
